@@ -4,6 +4,7 @@ import time
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import analyze as analyze_routes
 from app.api import auth as auth_routes
 from app.api import projects as project_routes
 from app.api import scans as scan_routes
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router)
     app.include_router(project_routes.router)
     app.include_router(scan_routes.router)
+    app.include_router(analyze_routes.router)
 
     return app
 

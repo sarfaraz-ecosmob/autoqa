@@ -77,6 +77,10 @@ def run_scan(self, scan_id: str, progress_channel: str, project_id: str, base_ur
                 ex=86400,
             )
 
+        # Remember the latest scan so /analyze reads the right evidence
+        project.settings = {**(project.settings or {}), "last_scan_id": scan_id}
+        db.commit()
+
         return {
             "scan_id": scan_id,
             "project_id": project_id,

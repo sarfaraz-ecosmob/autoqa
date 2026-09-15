@@ -63,7 +63,14 @@ def login(username: str = Form(""), password: str = Form("")):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
-    return page("Dashboard", "<table><tr><th>User</th></tr><tr><td>alice</td></tr></table>")
+    # SPA-style behavior: page fetches APIs client-side (captured by crawler)
+    return page("Dashboard", """
+    <table><tr><th>User</th></tr><tr><td>alice</td></tr></table>
+    <script>
+      fetch('/api/users');
+      fetch('/api/products');
+      fetch('/api/orders/1');
+    </script>""")
 
 
 @app.get("/users", response_class=HTMLResponse)
