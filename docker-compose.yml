@@ -32,6 +32,7 @@ services:
       AUTOQA_MINIO_ACCESS_KEY: ${AUTOQA_MINIO_ACCESS_KEY:-autoqa}
       AUTOQA_MINIO_SECRET_KEY: ${AUTOQA_MINIO_SECRET_KEY:-autoqa_dev_password}
       AUTOQA_MINIO_BUCKET: ${AUTOQA_MINIO_BUCKET:-autoqa-artifacts}
+      AUTOQA_INTERNAL_TARGETS: ${AUTOQA_INTERNAL_TARGETS:-demo-app,demo-app:9000}
     volumes:
       - ./backend:/app
     depends_on:
@@ -116,7 +117,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME"]
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout=5 | grep -q pong"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -125,7 +126,9 @@ services:
     networks: [worker-net, backend-net]
 
   browser-worker:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.browser-worker
     command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=browser --hostname=browser-worker@%h
     environment:
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
@@ -136,17 +139,24 @@ services:
       AUTOQA_MINIO_ACCESS_KEY: ${AUTOQA_MINIO_ACCESS_KEY:-autoqa}
       AUTOQA_MINIO_SECRET_KEY: ${AUTOQA_MINIO_SECRET_KEY:-autoqa_dev_password}
       AUTOQA_MINIO_BUCKET: ${AUTOQA_MINIO_BUCKET:-autoqa-artifacts}
+      AUTOQA_INTERNAL_TARGETS: ${AUTOQA_INTERNAL_TARGETS:-demo-app,demo-app:9000}
     volumes:
       - ./backend:/app
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout=5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     networks: [worker-net, backend-net]
 
   scheduler:
     build: ./backend
-    command: celery -A app.tasks.celery_app beat --loglevel=INFO
+    command: celery -A app.tasks.celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
     environment:
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}

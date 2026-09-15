@@ -20,6 +20,11 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    task_routes={
+        "app.run_scan": {"queue": "browser"},
+        "app.execute_test": {"queue": "browser"},
+        "app.*": {"queue": "autoqa"},
+    },
 )
 
 _redis_client: Redis | None = None

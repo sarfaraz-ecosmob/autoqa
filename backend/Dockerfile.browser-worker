@@ -1,0 +1,20 @@
+# Browser worker: Playwright + Chromium/Firefox/WebKit preinstalled by the base image.
+# Base image version MUST match the playwright pip package version below.
+FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/tmp
+
+WORKDIR /app
+
+COPY requirements.txt requirements-browser.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-browser.txt
+
+COPY . .
+
+# Base image already ships a non-root 'pwuser'
+USER pwuser
+
+CMD ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--queues=browser", "--hostname=browser-worker@%h"]

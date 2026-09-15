@@ -46,6 +46,13 @@ def validate_target_url(url: str) -> str:
         raise ValueError("Credentials in URL are not allowed")
 
     host = parsed.hostname.lower().rstrip(".")
+
+    # Explicit allowlist first (authorized internal targets, e.g. demo-app)
+    from app.security.allowlist import is_allowlisted
+
+    if is_allowlisted(host):
+        return url
+
     if host in _BLOCKED_HOSTNAMES or host.endswith(_INTERNAL_SUFFIXES):
         raise ValueError(f"Blocked internal host: {host}")
 

@@ -20,7 +20,7 @@ async def _register_and_login(client, email) -> dict:
         "/api/auth/register",
         json={"email": email, "password": "S3curePass!xyz", "name": "QA"},
     )
-    assert r.status_code == 201, r.text
+    assert r.status_code in (201, 409), r.text  # 409 = already exists from prior run
     r = await client.post(
         "/api/auth/login", json={"email": email, "password": "S3curePass!xyz"}
     )
@@ -63,18 +63,26 @@ async def test_project_crud_with_authorization_gate(client):
     tokens = await _register_and_login(client, "p4@example.com")
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
-    # SSRF-guarded creation
+    # SSRF guard: private/metadata targets rejected…
     r = await client.post(
         "/api/projects",
         headers=headers,
-        json={"name": "Demo Shop QA", "base_url": "http://demo-app:9000"},
+        json={"name": "Metadata", "base_url": "http://169.254.169.254/latest"},
     )
-    assert r.status_code == 422  # demo-app resolves privately inside compose
+    assert r.status_code == 422
+
+    # …but allowlisted internal targets (authorized demo-app) are accepted
+    r = await client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": f"Demo QA-{tokens['access_token'][-6:]}", "base_url": "http://demo-app:9000"},
+    )
+    assert r.status_code == 201, r.text
 
     r = await client.post(
         "/api/projects",
         headers=headers,
-        json={"name": "Demo Shop QA", "base_url": "https://example.com"},
+        json={"name": f"Demo Shop QA-{tokens['access_token'][-6:]}", "base_url": "https://example.com"},
     )
     assert r.status_code == 201, r.text
     project_id = r.json()["id"]
@@ -107,7 +115,7 @@ async def test_credentials_masked_in_response(client):
         "/api/projects",
         headers=headers,
         json={
-            "name": "Creds",
+            "name": f"Creds-{tokens['access_token'][-6:]}",
             "base_url": "https://example.com",
             "auth_type": "basic",
             "credentials": {"username": "alice", "password": "supersecret"},

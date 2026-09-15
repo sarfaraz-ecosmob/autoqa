@@ -98,7 +98,6 @@ class ScanStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
 
-
 class FindingStatus(str, enum.Enum):
     open = "open"
     confirmed = "confirmed"
