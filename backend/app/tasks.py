@@ -10,7 +10,7 @@ celery_app = Celery(
     "autoqa",
     broker=_settings.redis_url,
     backend=_settings.redis_url,
-    include=["app.tasks", "app.worker_tasks"],
+    include=["app.tasks", "app.worker_tasks", "app.worker_exec"],
 )
 
 celery_app.conf.update(
