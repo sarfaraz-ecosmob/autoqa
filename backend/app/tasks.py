@@ -10,7 +10,7 @@ celery_app = Celery(
     "autoqa",
     broker=_settings.redis_url,
     backend=_settings.redis_url,
-    include=["app.tasks", "app.worker_tasks", "app.worker_exec"],
+    include=["app.tasks", "app.worker_tasks", "app.worker_exec", "app.worker_security"],
 )
 
 celery_app.conf.update(
@@ -23,6 +23,7 @@ celery_app.conf.update(
     task_routes={
         "app.run_scan": {"queue": "browser"},
         "app.execute_test": {"queue": "browser"},
+        "app.run_security_scan": {"queue": "security"},
         "app.*": {"queue": "autoqa"},
     },
 )

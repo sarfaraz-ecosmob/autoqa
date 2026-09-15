@@ -176,6 +176,31 @@ services:
     restart: unless-stopped
     networks: [worker-net]
 
+  # ---------- Security worker (isolated, spec §13) ----------
+  security-worker:
+    build: ./backend
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 --queues=security --hostname=security-worker@%h --schedule=/tmp/celerybeat-schedule
+    environment:
+      AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
+      AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
+      AUTOQA_DATABASE_URL: ${AUTOQA_DATABASE_URL:-postgresql+psycopg://autoqa:autoqa_dev_password@postgres:5432/autoqa}
+      AUTOQA_INTERNAL_TARGETS: ${AUTOQA_INTERNAL_TARGETS:-demo-app,demo-app:9000}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout=5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks: [worker-net, backend-net]
+
 volumes:
   pgdata:
   miniodata:

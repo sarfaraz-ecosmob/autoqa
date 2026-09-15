@@ -10,6 +10,7 @@ from app.api import projects as project_routes
 from app.api import scans as scan_routes
 from app.api import failures as failure_routes
 from app.api import realtime as realtime_routes
+from app.api import security as security_routes
 from app.api import testcases as testcase_routes
 from app.api import testplans as testplan_routes
 from app.api import testruns as testrun_routes
@@ -86,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(testrun_routes.router)
     app.include_router(realtime_routes.router)
     app.include_router(failure_routes.router)
+    app.include_router(security_routes.router)
 
     return app
 
