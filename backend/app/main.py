@@ -8,6 +8,7 @@ from app.api import analyze as analyze_routes
 from app.api import auth as auth_routes
 from app.api import projects as project_routes
 from app.api import scans as scan_routes
+from app.api import testplans as testplan_routes
 from app.api.deps import get_current_user
 from app.config import get_settings
 from app.models import User
@@ -76,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(project_routes.router)
     app.include_router(scan_routes.router)
     app.include_router(analyze_routes.router)
+    app.include_router(testplan_routes.router)
 
     return app
 
