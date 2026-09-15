@@ -1,0 +1,54 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# --- Node ---
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+.eslintcache
+
+# --- Playwright ---
+playwright-report/
+test-results/
+.blob-storage/
+
+# --- Environment & secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Databases / data volumes ---
+*.sqlite3
+*.db
+/data/
+/pgdata/
+/minio-data/
+/redis-data/
+
+# --- Reports / artifacts ---
+/reports/output/
+/artifacts/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Docker ---
+.docker/
+compose.override.yml
