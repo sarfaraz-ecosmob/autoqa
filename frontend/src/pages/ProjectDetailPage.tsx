@@ -56,8 +56,18 @@ interface TestCase {
   approved: boolean;
 }
 
-const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases"] as const;
+const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions"] as const;
 type Tab = (typeof TABS)[number];
+
+interface RunRow {
+  id: string;
+  label: string;
+  status: string;
+  browsers: string[];
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
 
 const PRIORITY_STYLES: Record<string, string> = {
   critical: "bg-red-500/10 text-red-400",
@@ -86,6 +96,9 @@ export default function ProjectDetailPage() {
   // test cases
   const [cases, setCases] = useState<TestCase[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+
+  // runs
+  const [runs, setRuns] = useState<RunRow[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -132,6 +145,30 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function loadRuns() {
+    try {
+      setRuns(await api.get<RunRow[]>(`/projects/${id}/test-runs`));
+    } catch {
+      setRuns([]);
+    }
+  }
+
+  async function startRun() {
+    setError(null);
+    try {
+      const run = await api.post<{ id: string }>(`/projects/${id}/test-runs`, {
+        label: `Run ${new Date().toLocaleTimeString()}`,
+        browsers: ["chromium"],
+        max_retries: 1,
+      });
+      await api.post(`/projects/${id}/test-runs/${run.id}/start`);
+      await loadRuns();
+      window.location.hash = `#/projects/${id}/runs/${run.id}`;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Run start failed");
+    }
+  }
+
   useEffect(() => {
     if (tab === "discovery") loadDiscovery();
     if (tab === "apis" || tab === "test-plan" || tab === "test-cases") {
@@ -139,6 +176,7 @@ export default function ProjectDetailPage() {
       if (tab === "test-plan") loadPlan();
       if (tab === "test-cases") loadCases();
     }
+    if (tab === "executions") loadRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -529,6 +567,58 @@ export default function ProjectDetailPage() {
                 ))}
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {/* ---------- Executions ---------- */}
+      {tab === "executions" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold">Test runs ({runs.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Execute approved test cases with live progress
+              </p>
+            </div>
+            <button
+              onClick={startRun}
+              className="rounded-lg bg-brand-600 hover:bg-brand-500 px-4 py-2 text-sm font-semibold"
+            >
+              ▶ Start run
+            </button>
+          </div>
+          {runs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-800 p-12 text-center text-slate-500">
+              No runs yet — approve test cases, then start a run.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {runs.map((r) => (
+                <div key={r.id} className="rounded-xl border border-slate-800 bg-slate-900 px-5 py-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">{r.label}</p>
+                    <p className="text-xs text-slate-500">
+                      {new Date(r.created_at).toLocaleString()} · browsers: {(r.browsers ?? []).join(", ")}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs capitalize ${
+                      r.status === "completed" ? "bg-emerald-500/10 text-emerald-400"
+                      : r.status === "running" ? "bg-brand-500/10 text-brand-400"
+                      : "bg-slate-800 text-slate-400"}`}>
+                      {r.status}
+                    </span>
+                    <a
+                      href={`#/projects/${id}/runs/${r.id}`}
+                      className="text-sm text-brand-400 hover:text-brand-300"
+                    >
+                      View live →
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

@@ -1,8 +1,10 @@
 """Execution worker task (spec §9/§10/§18): run approved test cases.
 
 One task executes ONE test case in ONE browser (or as an API case), updates
-TestExecution rows, applies retry policy, and finalizes the TestRun.
+TestExecution rows, applies retry policy, publishes real-time events, and
+finalizes the TestRun.
 """
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -44,6 +46,18 @@ def execute_test(
         exec_row.worker_id = worker_id
         exec_row.attempt = attempt
         db.commit()
+
+        _publish_event(
+            test_run_id,
+            {
+                "event": "test_started",
+                "ref": case.get("ref", ""),
+                "execution_id": execution_id,
+                "browser": browser,
+                "attempt": attempt,
+                "worker": worker_id,
+            },
+        )
 
         started = time_start()
         if case.get("kind") == "api":
@@ -95,10 +109,40 @@ def execute_test(
         }
         db.commit()
 
+        _publish_event(
+            test_run_id,
+            {
+                "event": "test_finished",
+                "ref": case.get("ref", ""),
+                "execution_id": execution_id,
+                "status": final_status.value,
+                "attempt": attempt,
+                "duration_ms": duration_ms,
+                "worker": worker_id,
+            },
+        )
+
         _maybe_finalize_run(test_run_id)
         return {"execution_id": execution_id, "status": final_status.value, "attempt": attempt}
     finally:
         db.close()
+
+
+def _publish_event(test_run_id: str, event: dict) -> None:
+    """Publish a run event for the real-time dashboard (SSE)."""
+    try:
+        from app.tasks import get_redis
+
+        r = get_redis()
+        if r is not None:
+            from datetime import datetime, timezone
+
+            r.publish(
+                f"run:{test_run_id}",
+                json.dumps({**event, "ts": datetime.now(timezone.utc).isoformat()}),
+            )
+    except Exception:
+        pass
 
 
 def _maybe_finalize_run(test_run_id: str) -> None:
