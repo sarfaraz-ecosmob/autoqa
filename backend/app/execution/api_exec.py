@@ -1,4 +1,9 @@
-"""API test executor (spec §9): GET/POST/PUT/PATCH/DELETE/GraphQL + validations."""
+"""API test executor (spec §9): GET/POST/PUT/PATCH/DELETE/GraphQL + validations.
+
+Phase 9 additions: variable chaining ({{var}} substitution + extract steps),
+environment variables, and response-time capture per request.
+"""
+import re
 import time
 from typing import Any
 
@@ -6,10 +11,52 @@ import httpx
 
 from app.security.ssrf import validate_target_url
 
+_VAR_PATTERN = re.compile(r"\{\{(\w+)\}\}")
+
+
+def substitute_vars(value: Any, variables: dict) -> Any:
+    """Replace {{name}} placeholders in strings (recursively in dicts/lists)."""
+    if isinstance(value, str):
+        def repl(match: re.Match) -> str:
+            return str(variables.get(match.group(1), match.group(0)))
+        return _VAR_PATTERN.sub(repl, value)
+    if isinstance(value, dict):
+        return {k: substitute_vars(v, variables) for k, v in value.items()}
+    if isinstance(value, list):
+        return [substitute_vars(v, variables) for v in value]
+    return value
+
+
+def extract_path(body: Any, path: str) -> Any:
+    """Extract a value from JSON using dotted paths with [index] segments."""
+    current = body
+    for part in path.replace("]", "").replace("[", ".").split("."):
+        if part == "":
+            continue
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
+
 
 class ApiExecutor:
-    def __init__(self, base_url: str, timeout_seconds: float = 30.0):
+    def __init__(
+        self,
+        base_url: str,
+        variables: dict | None = None,
+        timeout_seconds: float = 30.0,
+    ):
         self.base_url = validate_target_url(base_url).rstrip("/")
+        self.variables: dict = dict(variables or {})
+        self.timeout_seconds = timeout_seconds
 
     def run(self, steps: list[dict]) -> dict:
         """Execute API steps; returns {status, actual_result, error_details, log}."""
@@ -19,28 +66,31 @@ class ApiExecutor:
         last_ms: int | None = None
         error: dict = {}
 
-        with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds_value()) as client:
+        with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds) as client:
             for step in steps:
                 action = step.get("action")
                 entry: dict = {"action": action}
 
                 if action == "request":
                     method = str(step.get("method", "GET")).upper()
-                    path = step.get("path", "/")
-                    payload = step.get("json") or step.get("body")
+                    path = substitute_vars(step.get("path", "/"), self.variables)
+                    payload = substitute_vars(step.get("json") or step.get("body"), self.variables)
+                    headers = substitute_vars(step.get("headers"), self.variables)
                     start = time.perf_counter()
                     try:
                         resp = client.request(
-                            method, path, json=payload if isinstance(payload, dict) else None,
+                            method,
+                            path,
+                            json=payload if isinstance(payload, dict) else None,
                             content=payload if isinstance(payload, str) else None,
+                            headers=headers or None,
                         )
                     except httpx.HTTPError as exc:
-                        entry["result"] = "error"
-                        log.append({**entry, "error": str(exc)})
+                        log.append({**entry, "result": "error", "error": str(exc)})
                         return {
                             "status": "failed",
                             "actual_result": f"{method} {path} raised {type(exc).__name__}",
-                            "error_details": {"exception": str(exc), "step": entry},
+                            "error_details": {"type": "exception", "message": str(exc)},
                             "log": log,
                         }
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -53,20 +103,27 @@ class ApiExecutor:
                     entry.update({"status": resp.status_code, "ms": elapsed_ms})
                     log.append(entry)
 
+                elif action == "extract":
+                    value = extract_path(last_body, step.get("path", ""))
+                    var_name = step.get("var", "")
+                    if var_name:
+                        self.variables[var_name] = value
+                    entry["result"] = "pass" if value is not None else "fail"
+                    entry["var"] = var_name
+                    log.append(entry)
+                    if value is None and step.get("required", True):
+                        error = {"type": "extract_failed", "path": step.get("path", "")}
+
                 elif action == "expect_status":
-                    expected = step.get("value")
+                    expected = substitute_vars(step.get("value"), self.variables)
                     ok = self._status_matches(last_status, expected)
                     entry["result"] = "pass" if ok else "fail"
                     entry["expected"] = expected
                     entry["actual"] = last_status
                     log.append(entry)
                     if not ok:
-                        error = {
-                            "type": "status_mismatch",
-                            "expected": expected,
-                            "actual": last_status,
-                            "body": last_body,
-                        }
+                        error = {"type": "status_mismatch", "expected": expected,
+                                 "actual": last_status, "body": last_body}
 
                 elif action == "expect_response_time_under_ms":
                     limit = int(step.get("value", 3000))
@@ -86,15 +143,26 @@ class ApiExecutor:
                     if not ok and not error:
                         error = {"type": "schema_mismatch", "missing_key": needle}
 
+                elif action == "expect_json_value":
+                    path = substitute_vars(step.get("path", ""), self.variables)
+                    expected = substitute_vars(step.get("value"), self.variables)
+                    actual = extract_path(last_body, path)
+                    ok = actual == expected
+                    entry["result"] = "pass" if ok else "fail"
+                    entry["path"] = path
+                    log.append(entry)
+                    if not ok and not error:
+                        error = {"type": "value_mismatch", "path": path,
+                                 "expected": expected, "actual": actual}
+
                 else:
                     log.append({**entry, "result": "skipped", "reason": "unknown action"})
 
                 if error:
                     break
 
-        status = "passed" if not error else "failed"
         return {
-            "status": status,
+            "status": "passed" if not error else "failed",
             "actual_result": (
                 f"final status {last_status} in {last_ms}ms"
                 if last_status is not None
@@ -102,11 +170,8 @@ class ApiExecutor:
             ),
             "error_details": error,
             "log": log,
+            "latency_ms": last_ms,
         }
-
-    @staticmethod
-    def timeout_seconds_value() -> float:
-        return 30.0
 
     @staticmethod
     def _status_matches(actual: int | None, expected: Any) -> bool:

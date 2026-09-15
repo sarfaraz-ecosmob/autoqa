@@ -63,7 +63,9 @@ def execute_test(
         if case.get("kind") == "api":
             from app.execution.api_exec import ApiExecutor
 
-            result = ApiExecutor(base_url).run(case.get("steps", []))
+            result = ApiExecutor(
+                base_url, variables=case.get("variables") or {}
+            ).run(case.get("steps", []))
         else:
             from app.execution.browser import BrowserExecutor
 
