@@ -1,6 +1,8 @@
 """Unit tests for Phase 0: app wiring, config, and task definitions."""
 import json
 
+import pytest
+
 from app.config import Settings
 from app.main import create_app
 from app.tasks import ping
@@ -14,7 +16,14 @@ def test_settings_defaults_are_env_driven():
 
 def test_app_routes_registered():
     app = create_app()
-    paths = {route.path for route in app.routes}
+    paths = set()
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path is None:
+            # Mounted routers expose their own routes
+            paths.update(getattr(r, "path", "") for r in getattr(route, "routes", []))
+        else:
+            paths.add(path)
     assert {"/api/health", "/api/hello", "/api/worker-ping"} <= paths
 
 

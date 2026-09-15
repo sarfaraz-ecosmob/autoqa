@@ -1,15 +1,16 @@
-"""Celery application and Phase 0 smoke tasks."""
+"""Celery application, shared Redis client, and tasks."""
 from celery import Celery
+from redis import Redis
 
 from app.config import get_settings
 
-settings = get_settings()
+_settings = get_settings()
 
 celery_app = Celery(
     "autoqa",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
-    include=["app.tasks"],
+    broker=_settings.redis_url,
+    backend=_settings.redis_url,
+    include=["app.tasks", "app.worker_tasks"],
 )
 
 celery_app.conf.update(
@@ -20,6 +21,21 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
+
+_redis_client: Redis | None = None
+
+
+def get_redis() -> Redis | None:
+    """Shared Redis connection (None only if redis is unreachable)."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            client = Redis.from_url(_settings.redis_url, socket_connect_timeout=2)
+            client.ping()
+            _redis_client = client
+        except Exception:
+            return None
+    return _redis_client
 
 
 @celery_app.task(name="app.ping")
