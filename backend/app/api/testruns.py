@@ -33,6 +33,7 @@ class RunIn(BaseModel):
     refs: list[str] | None = None  # explicit selected tests
     max_retries: int = Field(default=0, ge=0, le=5)
     viewport: dict | None = None
+    environment_id: str | None = None  # §17 test data: environment + datasets to resolve
 
 
 class RunControl(BaseModel):
@@ -101,6 +102,7 @@ def create_run(
             "priorities": body.priorities,
             "refs": body.refs,
             "viewport": body.viewport,
+            "environment_id": body.environment_id,
         },
     )
     db.add(run)
@@ -192,6 +194,16 @@ def start_run(
         )
     ).scalars().all()
     max_retries = int((run.config or {}).get("max_retries", 0))
+
+    # Test data resolution (§17): environment vars + datasets merged into the
+    # flat variables dict executors substitute into {{placeholders}}.
+    from app.testdata import resolve_variables
+
+    try:
+        variables = resolve_variables(project, (run.config or {}).get("environment_id"))
+    except Exception:
+        variables = {}
+
     dispatched = 0
     for ex in executions:
         case = db.execute(
@@ -213,6 +225,7 @@ def start_run(
                     "scenario": case.scenario,
                     "capture_on_pass": case.capture_on_pass,
                 },
+                "variables": variables,
                 "browser": ex.browser,
                 "attempt": 1,
                 "max_attempts": max_retries + 1,

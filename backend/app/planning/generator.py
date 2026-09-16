@@ -235,4 +235,37 @@ def build_test_plan(
         user=json.dumps(llm_context),
         fallback=heuristic,
     )
+
+    # The LLM may only REFINE the evidence-based plan, never shrink it: the
+    # heuristic builder guarantees all 22 required sections (§6), so any LLM
+    # sections are merged in and missing required sections are restored.
+    if llm_plan is not heuristic and isinstance(llm_plan, dict):
+        llm_sections = llm_plan.get("sections")
+        if isinstance(llm_sections, list) and llm_sections:
+            merged: list[dict] = []
+            by_name: dict[str, dict] = {}
+            for s in llm_sections:
+                name = str(s.get("section", "")).strip()
+                if name and name not in by_name:
+                    by_name[name] = {
+                        "section": name,
+                        "content": str(s.get("content", "")),
+                        "priority": str(s.get("priority", "medium")),
+                        "category": str(s.get("category", "functional")),
+                    }
+            for required in ALL_SECTIONS:
+                if required in by_name:
+                    merged.append(by_name[required])
+                else:
+                    heuristic_map = {h["section"]: h for h in heuristic["sections"]}
+                    merged.append(
+                        heuristic_map.get(required, {"section": required, "content": "", "priority": "medium", "category": "functional"})
+                    )
+            # LLM-only extra sections (not in the required list) are appended.
+            for name, s in by_name.items():
+                if name not in ALL_SECTIONS:
+                    merged.append(s)
+            llm_plan["sections"] = merged
+        if not isinstance(llm_plan.get("objective"), str) or not llm_plan.get("objective"):
+            llm_plan["objective"] = heuristic["objective"]
     return llm_plan

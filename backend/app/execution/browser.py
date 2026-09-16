@@ -7,9 +7,10 @@ import time
 
 
 class BrowserExecutor:
-    def __init__(self, browser_name: str = "chromium", viewport: dict | None = None):
+    def __init__(self, browser_name: str = "chromium", viewport: dict | None = None, variables: dict | None = None):
         self.browser_name = browser_name
         self.viewport = viewport or {"width": 1280, "height": 720}
+        self.variables = dict(variables or {})
 
     def run(self, steps: list[dict], screenshot_key: str | None = None, capture_on_pass: bool = False) -> dict:
         """Execute browser steps; returns {status, actual_result, error_details, log, evidence}.
@@ -19,6 +20,11 @@ class BrowserExecutor:
         captured when a key is provided (spec §12).
         """
         from playwright.sync_api import sync_playwright
+
+        from app.execution.api_exec import substitute_vars
+
+        def _sub(value):
+            return substitute_vars(value, self.variables) if self.variables else value
 
         log: list[dict] = []
         console_messages: list[str] = []
@@ -41,16 +47,17 @@ class BrowserExecutor:
                     entry: dict = {"action": action}
 
                     if action == "goto":
-                        resp = page.goto(step["target"], timeout=15000, wait_until="domcontentloaded")
+                        target = _sub(step["target"])
+                        resp = page.goto(target, timeout=15000, wait_until="domcontentloaded")
                         last_response_status = resp.status if resp else None
-                        entry["url"] = step["target"]
+                        entry["url"] = target
                         entry["status"] = last_response_status
 
                     elif action == "fill":
-                        page.fill(step["target"], str(step.get("value", "")), timeout=5000)
+                        page.fill(_sub(step["target"]), str(_sub(step.get("value", ""))), timeout=5000)
 
                     elif action == "click":
-                        page.click(step["target"], timeout=5000)
+                        page.click(_sub(step["target"]), timeout=5000)
                         page.wait_for_timeout(300)  # allow network settle
 
                     elif action == "expect_status":

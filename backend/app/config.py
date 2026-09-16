@@ -28,12 +28,15 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_region: str = "us-east-1"
 
-    # Pluggable LLM (spec §1): "none" (heuristic fallbacks) or "openai" (any
-    # OpenAI-compatible API, including locally hosted vLLM/Ollama gateways)
+    # Pluggable LLM (spec §1): "none" (heuristic fallbacks), "openai" (hosted
+    # or self-hosted OpenAI-compatible), or "openrouter" (openrouter.ai —
+    # hundreds of models behind one key). Wire format is identical.
     llm_provider: str = "none"
-    llm_base_url: str = "https://api.openai.com/v1"
+    llm_base_url: str = ""  # empty → provider default
     llm_api_key: str = ""
-    llm_model: str = "gpt-4o-mini"
+    # "auto" → detect the best FREE model from OpenRouter's catalog (default)
+    llm_model: str = "auto"
+    llm_http_referer: str = ""
     llm_timeout_seconds: int = 60
 
     # Realtime (Phase 7)

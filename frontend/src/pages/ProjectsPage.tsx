@@ -72,7 +72,7 @@ export default function ProjectsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Projects</h1>
-          <p className="text-sm text-slate-400 mt-1">
+          <p className="text-sm text-slate-500 mt-1">
             QA projects targeting a website under test
           </p>
         </div>
@@ -85,7 +85,7 @@ export default function ProjectsPage() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400">
+        <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-600">
           {error}
         </div>
       )}
@@ -93,21 +93,21 @@ export default function ProjectsPage() {
       {showForm && (
         <form
           onSubmit={onCreate}
-          className="mb-6 rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-4"
+          className="mb-6 rounded-xl border border-slate-200 bg-white shadow-sm p-6 space-y-4"
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">Name</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Name</label>
               <input
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
                 placeholder="Demo Shop QA"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 Target URL
               </label>
               <input
@@ -115,24 +115,24 @@ export default function ProjectsPage() {
                 type="url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
                 placeholder="https://staging.example.com"
               />
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Description <span className="text-slate-500">(optional)</span>
             </label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
               placeholder="What are you testing?"
             />
           </div>
-          <label className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 cursor-pointer">
+          <label className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 cursor-pointer">
             <input
               type="checkbox"
               required
@@ -140,7 +140,7 @@ export default function ProjectsPage() {
               onChange={(e) => setAuthConfirmed(e.target.checked)}
               className="mt-0.5 h-4 w-4 accent-amber-500"
             />
-            <span className="text-sm text-amber-200">
+            <span className="text-sm text-amber-900">
               I confirm I have <strong>authorization to test</strong> this application (required
               before scanning — spec §2 step 4).
             </span>
@@ -149,7 +149,7 @@ export default function ProjectsPage() {
             <button
               type="button"
               onClick={() => setShowForm(false)}
-              className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-slate-200"
+              className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:text-slate-800"
             >
               Cancel
             </button>
@@ -165,7 +165,7 @@ export default function ProjectsPage() {
       )}
 
       {projects.length === 0 && !showForm ? (
-        <div className="rounded-xl border border-dashed border-slate-800 p-12 text-center text-slate-500">
+        <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
           No projects yet. Create one to start testing.
         </div>
       ) : (
@@ -174,11 +174,11 @@ export default function ProjectsPage() {
             <Link
               key={p.id}
               to={`/projects/${p.id}`}
-              className="group rounded-xl border border-slate-800 bg-slate-900 p-5 hover:border-brand-500/50 transition-colors"
+              className="group rounded-xl border border-slate-200 bg-white shadow-sm p-5 hover:border-brand-500/50 transition-colors"
             >
               <div className="flex items-start justify-between">
                 <div className="min-w-0">
-                  <h3 className="font-semibold text-slate-100 group-hover:text-brand-400">
+                  <h3 className="font-semibold text-slate-900 group-hover:text-brand-600">
                     {p.name}
                   </h3>
                   <p className="mt-0.5 truncate text-sm text-slate-500">{p.base_url}</p>
@@ -186,15 +186,15 @@ export default function ProjectsPage() {
                 <span
                   className={`ml-3 shrink-0 rounded-full px-2.5 py-0.5 text-xs ${
                     p.authorization_confirmed
-                      ? "bg-emerald-500/10 text-emerald-400"
-                      : "bg-amber-500/10 text-amber-400"
+                      ? "bg-emerald-50 text-emerald-600"
+                      : "bg-amber-50 text-amber-700"
                   }`}
                 >
                   {p.authorization_confirmed ? "authorized" : "unconfirmed"}
                 </span>
               </div>
               {p.description && (
-                <p className="mt-2 line-clamp-2 text-sm text-slate-400">{p.description}</p>
+                <p className="mt-2 line-clamp-2 text-sm text-slate-500">{p.description}</p>
               )}
               <div className="mt-4 flex items-center justify-between">
                 <span className="text-xs text-slate-600">
@@ -205,7 +205,7 @@ export default function ProjectsPage() {
                     e.preventDefault();
                     onDelete(p.id, p.name);
                   }}
-                  className="text-xs text-slate-600 hover:text-red-400"
+                  className="text-xs text-slate-600 hover:text-red-600"
                 >
                   Delete
                 </button>

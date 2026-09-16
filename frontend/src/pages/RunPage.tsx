@@ -26,12 +26,12 @@ interface RunRow {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  passed: "text-emerald-400",
-  failed: "text-red-400",
-  running: "text-brand-400",
+  passed: "text-emerald-600",
+  failed: "text-red-600",
+  running: "text-brand-600",
   queued: "text-slate-500",
   skipped: "text-slate-500",
-  blocked: "text-amber-400",
+  blocked: "text-amber-700",
 };
 
 interface LogLine {
@@ -160,28 +160,28 @@ export default function RunPage() {
     <div className="p-8 max-w-6xl">
       <div className="flex items-start justify-between mb-6">
         <div>
-          <Link to={`/projects/${id}`} className="text-slate-500 hover:text-slate-300 text-sm">
+          <Link to={`/projects/${id}`} className="text-slate-500 hover:text-slate-700 text-sm">
             ← {run?.label ?? "Project"}
           </Link>
           <h1 className="mt-2 text-2xl font-bold flex items-center gap-3">
             Execution
             <span className={`rounded-full px-2.5 py-0.5 text-xs capitalize ${
-              live?.status === "completed" ? "bg-emerald-500/10 text-emerald-400"
-              : live?.status === "running" ? "bg-brand-500/10 text-brand-400"
-              : "bg-slate-800 text-slate-400"}`}>
+              live?.status === "completed" ? "bg-emerald-50 text-emerald-600"
+              : live?.status === "running" ? "bg-brand-50 text-brand-600"
+              : "bg-slate-100 text-slate-500"}`}>
               {live?.status ?? "…"}
             </span>
           </h1>
         </div>
         <div className="flex gap-2">
           {live?.status === "running" && (
-            <button onClick={() => control("pause")} className="rounded-lg bg-slate-800 hover:bg-slate-700 px-4 py-2 text-sm">Pause</button>
+            <button onClick={() => control("pause")} className="rounded-lg bg-slate-100 hover:bg-slate-200 px-4 py-2 text-sm">Pause</button>
           )}
           {live?.status === "paused" && (
             <button onClick={() => control("resume")} className="rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm">Resume</button>
           )}
           {(live?.status === "running" || live?.status === "paused") && (
-            <button onClick={() => control("stop")} className="rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 px-4 py-2 text-sm">Stop</button>
+            <button onClick={() => control("stop")} className="rounded-lg bg-red-100 text-red-600 hover:bg-red-100 px-4 py-2 text-sm">Stop</button>
           )}
         </div>
       </div>
@@ -189,15 +189,15 @@ export default function RunPage() {
       {/* Counters */}
       <div className="grid grid-cols-3 md:grid-cols-7 gap-3 mb-4">
         {[
-          ["Total", c.total ?? 0, "text-slate-200"],
-          ["Queued", c.queued ?? 0, "text-slate-400"],
-          ["Running", c.running ?? 0, "text-brand-400"],
-          ["Passed", c.passed ?? 0, "text-emerald-400"],
-          ["Failed", c.failed ?? 0, "text-red-400"],
-          ["Skipped", c.skipped ?? 0, "text-slate-400"],
-          ["Blocked", c.blocked ?? 0, "text-amber-400"],
+          ["Total", c.total ?? 0, "text-slate-800"],
+          ["Queued", c.queued ?? 0, "text-slate-500"],
+          ["Running", c.running ?? 0, "text-brand-600"],
+          ["Passed", c.passed ?? 0, "text-emerald-600"],
+          ["Failed", c.failed ?? 0, "text-red-600"],
+          ["Skipped", c.skipped ?? 0, "text-slate-500"],
+          ["Blocked", c.blocked ?? 0, "text-amber-700"],
         ].map(([label, value, cls]) => (
-          <div key={label as string} className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3">
+          <div key={label as string} className="rounded-xl border border-slate-200 bg-white shadow-sm px-4 py-3">
             <p className="text-xs text-slate-500">{label}</p>
             <p className={`text-2xl font-bold ${cls}`}>{value}</p>
           </div>
@@ -205,12 +205,12 @@ export default function RunPage() {
       </div>
 
       {/* Progress */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900 p-5 mb-4">
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5 mb-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-slate-400">Progress</span>
+          <span className="text-sm text-slate-500">Progress</span>
           <span className="text-sm font-semibold">{pct}%</span>
         </div>
-        <div className="h-2.5 rounded-full bg-slate-800 overflow-hidden">
+        <div className="h-2.5 rounded-full bg-slate-200 overflow-hidden">
           <div className="h-full bg-gradient-to-r from-brand-600 to-brand-400 transition-all duration-500" style={{ width: `${pct}%` }} />
         </div>
         <p className="mt-2 text-xs text-slate-500">
@@ -220,47 +220,47 @@ export default function RunPage() {
 
       <div className="grid md:grid-cols-2 gap-4">
         {/* Live log */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900">
-          <div className="px-5 py-3 border-b border-slate-800 text-sm font-semibold">Live log</div>
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="px-5 py-3 border-b border-slate-200 text-sm font-semibold">Live log</div>
           <div ref={logRef} className="h-80 overflow-auto p-4 font-mono text-xs space-y-1">
             {logLines.length === 0 && <p className="text-slate-600">Waiting for events…</p>}
             {logLines.map((l, i) => (
-              <p key={i} className="text-slate-300">
+              <p key={i} className="text-slate-700">
                 <span className="text-slate-600">{l.ts}</span> {l.text}
               </p>
             ))}
           </div>
-          <div className="px-5 py-2 border-t border-slate-800 text-[11px] text-slate-600">
+          <div className="px-5 py-2 border-t border-slate-200 text-[11px] text-slate-600">
             Full step logs appear in each execution's evidence after completion
           </div>
         </div>
 
         {/* Recent executions */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900">
-          <div className="px-5 py-3 border-b border-slate-800 text-sm font-semibold">Executions</div>
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="px-5 py-3 border-b border-slate-200 text-sm font-semibold">Executions</div>
           <div className="h-80 overflow-auto">
             <table className="w-full text-sm">
               <tbody>
                 {(live?.recent ?? []).map((r) => (
                   <tr
                     key={r.ref + r.attempt}
-                    className="border-b border-slate-800/50 last:border-0 cursor-pointer hover:bg-slate-800/40"
+                    className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50"
                     onClick={() => openEvidence(r.execution_id)}
                     title="View evidence (screenshot, console)"
                   >
-                    <td className="px-4 py-2 font-mono text-xs text-brand-400">{r.ref}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-brand-600">{r.ref}</td>
                     <td className={`px-2 py-2 text-xs font-semibold uppercase ${STATUS_STYLES[r.status] ?? ""}`}>
                       {r.status}
                     </td>
                     <td className="px-2 py-2 text-xs text-slate-500">{r.browser}</td>
                     <td className="px-2 py-2 text-xs text-slate-500">{r.duration_ms ?? "—"}ms</td>
-                    <td className="px-4 py-2 text-xs text-slate-400 truncate max-w-40">{r.actual_result || "—"}</td>
+                    <td className="px-4 py-2 text-xs text-slate-500 truncate max-w-40">{r.actual_result || "—"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="px-5 py-2 border-t border-slate-800 text-[11px] text-slate-600">
+          <div className="px-5 py-2 border-t border-slate-200 text-[11px] text-slate-600">
             Click a row to view its evidence (screenshot &amp; console)
           </div>
         </div>
@@ -268,14 +268,14 @@ export default function RunPage() {
 
       {/* Cross-browser matrix (§16) — visible once the run has data */}
       {matrix && matrix.rows.length > 0 && (
-        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900">
-          <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
             <span className="text-sm font-semibold">Cross-browser matrix</span>
             <span className="text-xs text-slate-500">
               {matrix.browsers.map((b) => (
                 <span key={b} className="ml-3">
-                  {b}: <span className="text-emerald-400">{matrix.summary[b]?.passed ?? 0}✓</span>{" "}
-                  <span className="text-red-400">{matrix.summary[b]?.failed ?? 0}✗</span>
+                  {b}: <span className="text-emerald-600">{matrix.summary[b]?.passed ?? 0}✓</span>{" "}
+                  <span className="text-red-600">{matrix.summary[b]?.failed ?? 0}✗</span>
                 </span>
               ))}
             </span>
@@ -283,7 +283,7 @@ export default function RunPage() {
           <div className="overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="px-5 py-2.5">Test case</th>
                   {matrix.browsers.map((b) => (
                     <th key={b} className="px-5 py-2.5 capitalize">{b}</th>
@@ -292,9 +292,9 @@ export default function RunPage() {
               </thead>
               <tbody>
                 {matrix.rows.map((row) => (
-                  <tr key={row.ref} className="border-b border-slate-800/50 last:border-0">
+                  <tr key={row.ref} className="border-b border-slate-100 last:border-0">
                     <td className="px-5 py-2.5">
-                      <span className="font-mono text-xs text-brand-400">{row.ref}</span>
+                      <span className="font-mono text-xs text-brand-600">{row.ref}</span>
                       <span className="ml-2 text-xs text-slate-500">{row.scenario.slice(0, 60)}</span>
                     </td>
                     {matrix.browsers.map((b) => {
@@ -302,9 +302,9 @@ export default function RunPage() {
                       return (
                         <td key={b} className="px-5 py-2.5">
                           <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                            s === "passed" ? "bg-emerald-500/10 text-emerald-400"
-                            : s === "failed" ? "bg-red-500/10 text-red-400"
-                            : "bg-slate-500/10 text-slate-500"}`}>
+                            s === "passed" ? "bg-emerald-50 text-emerald-600"
+                            : s === "failed" ? "bg-red-50 text-red-600"
+                            : "bg-slate-100 text-slate-500"}`}>
                             {s}
                           </span>
                         </td>
@@ -322,26 +322,26 @@ export default function RunPage() {
       {evidence && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8" onClick={() => setEvidence(null)}>
           <div
-            className="bg-slate-900 border border-slate-700 rounded-xl max-w-3xl w-full max-h-[85vh] overflow-auto p-6"
+            className="bg-white border border-slate-300 rounded-xl max-w-3xl w-full max-h-[85vh] overflow-auto p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between mb-4">
               <div>
-                <p className="font-mono text-sm text-brand-400">{evidence.ref}</p>
+                <p className="font-mono text-sm text-brand-600">{evidence.ref}</p>
                 <p className={`text-sm font-semibold uppercase ${STATUS_STYLES[evidence.status] ?? ""}`}>
                   {evidence.status}
                 </p>
               </div>
-              <button onClick={() => setEvidence(null)} className="text-slate-500 hover:text-slate-300 text-xl leading-none">×</button>
+              <button onClick={() => setEvidence(null)} className="text-slate-500 hover:text-slate-700 text-xl leading-none">×</button>
             </div>
             {evidence.actual_result && (
-              <p className="text-sm text-slate-300 mb-4">{evidence.actual_result}</p>
+              <p className="text-sm text-slate-700 mb-4">{evidence.actual_result}</p>
             )}
             {evidence.screenshot_base64 ? (
               <img
                 src={`data:image/png;base64,${evidence.screenshot_base64}`}
                 alt={`Evidence for ${evidence.ref}`}
-                className="w-full rounded-lg border border-slate-700 mb-4"
+                className="w-full rounded-lg border border-slate-300 mb-4"
               />
             ) : (
               <p className="text-xs text-slate-500 mb-4">No screenshot captured for this execution.</p>
@@ -349,7 +349,7 @@ export default function RunPage() {
             {evidence.console.length > 0 && (
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Browser console</p>
-                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-slate-400 overflow-auto max-h-40">{evidence.console.join("\n")}</pre>
+                <pre className="bg-slate-50 rounded-lg p-3 text-xs text-slate-500 overflow-auto max-h-40">{evidence.console.join("\n")}</pre>
               </div>
             )}
           </div>

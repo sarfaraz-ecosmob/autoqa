@@ -56,7 +56,7 @@ interface TestCase {
   approved: boolean;
 }
 
-const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "quality", "reports"] as const;
+const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "history", "quality", "assistant", "test-data", "reports"] as const;
 type Tab = (typeof TABS)[number];
 
 interface RunRow {
@@ -75,6 +75,30 @@ interface A11yRow {
   violation_count: number;
   by_severity: Record<string, number>;
   violations: { rule: string; severity: string; help: string; count: number }[];
+}
+
+interface HistoryRow {
+  id: string;
+  label: string;
+  status: string;
+  browsers: string[];
+  created_at: string;
+  passed: number;
+  failed: number;
+  skipped: number;
+  other: number;
+}
+
+interface CompareResult {
+  base: { label: string; total: number; passed: number; failed: number };
+  target: { label: string; total: number; passed: number; failed: number };
+  new_failures: { ref: string; browser: string }[];
+  resolved_failures: { ref: string; browser: string }[];
+  persistent_failures: { ref: string; browser: string }[];
+  new_tests: { ref: string; browser: string }[];
+  removed_tests: { ref: string; browser: string }[];
+  duration_changes: { ref: string; browser: string; base_ms: number; target_ms: number; delta_ms: number }[];
+  performance_changes: { scenario: string; base_p95_ms: number; target_p95_ms: number; delta_p95_ms: number }[];
 }
 
 interface ReportRow {
@@ -101,11 +125,39 @@ interface PerfRow {
   created_at: string;
 }
 
+interface EnvRow {
+  id: string;
+  name: string;
+  base_url: string;
+  variables: Record<string, string>;
+  created_at: string;
+}
+
+interface DatasetRow {
+  id: string;
+  name: string;
+  kind: string;
+  generator: string;
+  generator_params: Record<string, unknown>;
+  values: Record<string, string>;
+  secret_keys: string[];
+  environment_id: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+interface ChatMsg {
+  role: "user" | "assistant";
+  text: string;
+  intent?: string;
+  grounded?: boolean;
+}
+
 const PRIORITY_STYLES: Record<string, string> = {
-  critical: "bg-red-500/10 text-red-400",
+  critical: "bg-red-50 text-red-600",
   high: "bg-orange-500/10 text-orange-400",
   medium: "bg-yellow-500/10 text-yellow-400",
-  low: "bg-slate-500/10 text-slate-400",
+  low: "bg-slate-100 text-slate-500",
 };
 
 export default function ProjectDetailPage() {
@@ -152,6 +204,36 @@ export default function ProjectDetailPage() {
   const [reportReq, setReportReq] = useState<{ format: string; runId: string }>({
     format: "pdf",
     runId: "",
+  });
+
+  // history (Phase 13)
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [compareBase, setCompareBase] = useState("");
+  const [compareTarget, setCompareTarget] = useState("");
+  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+
+  // assistant (Phase 14, §22)
+  const [chat, setChat] = useState<ChatMsg[]>([
+    {
+      role: "assistant",
+      text: "Hi! Ask me about failures, defects by module, API latency, security findings, accessibility, run comparison, or a project summary — I answer from your actual QA data.",
+    },
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+
+  // test data (Phase 14, §17)
+  const [envs, setEnvs] = useState<EnvRow[]>([]);
+  const [datasets, setDatasets] = useState<DatasetRow[]>([]);
+  const [resolvedPreview, setResolvedPreview] = useState<{ variables: Record<string, string>; count: number } | null>(null);
+  const [envForm, setEnvForm] = useState<{ name: string; base_url: string; varsText: string }>({ name: "", base_url: "", varsText: "" });
+  const [dsForm, setDsForm] = useState<{ name: string; kind: string; generator: string; valuesText: string; envId: string }>({
+    name: "",
+    kind: "static",
+    generator: "",
+    valuesText: "",
+    envId: "",
   });
 
   const load = useCallback(async () => {
@@ -238,6 +320,12 @@ export default function ProjectDetailPage() {
     if (tab === "reports") {
       loadReports();
       loadRuns();
+    }
+    if (tab === "history") {
+      loadHistory();
+    }
+    if (tab === "test-data") {
+      loadTestdata();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -379,6 +467,166 @@ export default function ProjectDetailPage() {
     }
   }
 
+  // ---------- History & comparison (Phase 13) ----------
+
+  async function loadHistory() {
+    try {
+      setHistory(await api.get<HistoryRow[]>(`/projects/${id}/history/runs`));
+    } catch {
+      setHistory([]);
+    }
+  }
+
+  async function runCompare() {
+    if (!compareBase || !compareTarget || compareBase === compareTarget) return;
+    setCompareBusy(true);
+    setError(null);
+    try {
+      setCompareResult(
+        await api.post<CompareResult>(`/projects/${id}/history/compare`, {
+          base_run_id: compareBase,
+          target_run_id: compareTarget,
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Comparison failed");
+    } finally {
+      setCompareBusy(false);
+    }
+  }
+
+  // ---------- Assistant & test data (Phase 14) ----------
+
+  async function loadTestdata() {
+    try {
+      const [envRes, dsRes] = await Promise.all([
+        api.get<{ items: EnvRow[] }>(`/projects/${id}/environments`),
+        api.get<{ items: DatasetRow[] }>(`/projects/${id}/datasets`),
+      ]);
+      setEnvs(envRes.items);
+      setDatasets(dsRes.items);
+    } catch {
+      setEnvs([]);
+      setDatasets([]);
+    }
+  }
+
+  async function previewResolved() {
+    setError(null);
+    try {
+      const qs = dsForm.envId ? `?environment_id=${dsForm.envId}` : "";
+      setResolvedPreview(await api.get(`/projects/${id}/test-data/resolve${qs}`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Resolve failed");
+    }
+  }
+
+  async function saveEnv() {
+    setError(null);
+    let vars: Record<string, string> = {};
+    try {
+      vars = envForm.varsText.trim() ? JSON.parse(envForm.varsText) : {};
+    } catch {
+      setError("Variables must be valid JSON, e.g. {\"user\": \"alice\"}");
+      return;
+    }
+    try {
+      await api.post(`/projects/${id}/environments`, {
+        name: envForm.name,
+        base_url: envForm.base_url,
+        variables: vars,
+      });
+      setEnvForm({ name: "", base_url: "", varsText: "" });
+      await loadTestdata();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save environment failed");
+    }
+  }
+
+  async function saveDataset() {
+    setError(null);
+    let values: Record<string, string> = {};
+    try {
+      values = dsForm.valuesText.trim() ? JSON.parse(dsForm.valuesText) : {};
+    } catch {
+      setError("Values must be valid JSON, e.g. {\"password\": \"s3cret\"}");
+      return;
+    }
+    try {
+      await api.post(`/projects/${id}/datasets`, {
+        name: dsForm.name,
+        kind: dsForm.kind,
+        generator: dsForm.kind === "generated" ? dsForm.generator : "",
+        values,
+        environment_id: dsForm.envId || null,
+      });
+      setDsForm({ name: "", kind: "static", generator: "", valuesText: "", envId: "" });
+      await loadTestdata();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save dataset failed");
+    }
+  }
+
+  async function deleteEnv(envId: string) {
+    setError(null);
+    try {
+      await api.del(`/projects/${id}/environments/${envId}`);
+      await loadTestdata();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed (datasets linked?)");
+    }
+  }
+
+  async function deleteDataset(dsId: string) {
+    setError(null);
+    try {
+      await api.del(`/projects/${id}/datasets/${dsId}`);
+      await loadTestdata();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  async function toggleDataset(ds: DatasetRow) {
+    setError(null);
+    try {
+      await api.patch(`/projects/${id}/datasets/${ds.id}`, {
+        name: ds.name,
+        kind: ds.kind,
+        generator: ds.generator,
+        generator_params: ds.generator_params,
+        values: ds.values,
+        environment_id: ds.environment_id,
+        is_active: !ds.is_active,
+      });
+      await loadTestdata();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Toggle failed");
+    }
+  }
+
+  async function askAssistant() {
+    const question = chatInput.trim();
+    if (!question || chatBusy) return;
+    setChatBusy(true);
+    setChatInput("");
+    setChat((c) => [...c, { role: "user", text: question }]);
+    try {
+      const res = await api.post<{ answer: string; intent: string; grounded: boolean }>(
+        `/projects/${id}/assistant/ask`,
+        { question },
+      );
+      setChat((c) => [...c, { role: "assistant", text: res.answer, intent: res.intent, grounded: res.grounded }]);
+    } catch (err) {
+      setChat((c) => [
+        ...c,
+        { role: "assistant", text: err instanceof Error ? err.message : "Assistant unavailable" },
+      ]);
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   // ---------- Reports (Phase 12) ----------
 
   async function loadReports() {
@@ -460,7 +708,7 @@ export default function ProjectDetailPage() {
 
   if (!project) {
     return (
-      <div className="p-8 text-slate-400">{error ?? "Loading…"}</div>
+      <div className="p-8 text-slate-500">{error ?? "Loading…"}</div>
     );
   }
 
@@ -470,7 +718,7 @@ export default function ProjectDetailPage() {
       <div className="flex items-start justify-between mb-6">
         <div>
           <div className="flex items-center gap-3">
-            <Link to="/" className="text-slate-500 hover:text-slate-300 text-sm">
+            <Link to="/" className="text-slate-500 hover:text-slate-700 text-sm">
               ← Projects
             </Link>
           </div>
@@ -480,8 +728,8 @@ export default function ProjectDetailPage() {
         <span
           className={`rounded-full px-3 py-1 text-xs ${
             project.authorization_confirmed
-              ? "bg-emerald-500/10 text-emerald-400"
-              : "bg-amber-500/10 text-amber-400"
+              ? "bg-emerald-50 text-emerald-600"
+              : "bg-amber-50 text-amber-700"
           }`}
         >
           {project.authorization_confirmed ? "authorized" : "authorization unconfirmed"}
@@ -489,21 +737,21 @@ export default function ProjectDetailPage() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/30 px-4 py-3 text-sm text-red-400">
+        <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-600">
           {error}
         </div>
       )}
 
       {/* Tabs */}
-      <div className="mb-6 flex gap-1 border-b border-slate-800">
+      <div className="mb-6 flex gap-1 border-b border-slate-200">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`px-4 py-2.5 text-sm capitalize transition-colors ${
               tab === t
-                ? "border-b-2 border-brand-500 text-brand-400 font-medium"
-                : "text-slate-400 hover:text-slate-200"
+                ? "border-b-2 border-brand-500 text-brand-600 font-medium"
+                : "text-slate-500 hover:text-slate-800"
             }`}
           >
             {t.replace("-", " ")}
@@ -514,15 +762,15 @@ export default function ProjectDetailPage() {
       {/* ---------- Overview ---------- */}
       {tab === "overview" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
             <h3 className="font-semibold mb-2">Description</h3>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-slate-500">
               {project.description || "No description provided."}
             </p>
           </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
             <h3 className="font-semibold mb-3">Pipeline</h3>
-            <ol className="space-y-2 text-sm text-slate-400">
+            <ol className="space-y-2 text-sm text-slate-500">
               <li>1. Discover — scan the site (Discovery tab)</li>
               <li>2. Analyze — frontend stack + API inventory (APIs tab)</li>
               <li>3. Plan — generate the test plan (Test Plan tab)</li>
@@ -537,15 +785,15 @@ export default function ProjectDetailPage() {
       {tab === "discovery" && (
         <div className="space-y-4">
           {!project.authorization_confirmed ? (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-6 text-sm text-amber-200">
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-sm text-amber-900">
               Authorization must be confirmed before scanning. Edit the project to confirm, or
               re-create it with the authorization checkbox ticked.
             </div>
           ) : (
-            <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
               <div className="flex items-end gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
                     Max depth
                   </label>
                   <input
@@ -556,11 +804,11 @@ export default function ProjectDetailPage() {
                     onChange={(e) =>
                       setScanControls({ ...scanControls, max_depth: Number(e.target.value) })
                     }
-                    className="w-24 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                    className="w-24 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
                     Max URLs
                   </label>
                   <input
@@ -571,7 +819,7 @@ export default function ProjectDetailPage() {
                     onChange={(e) =>
                       setScanControls({ ...scanControls, max_urls: Number(e.target.value) })
                     }
-                    className="w-24 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                    className="w-24 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                   />
                 </div>
                 <button
@@ -583,7 +831,7 @@ export default function ProjectDetailPage() {
                 </button>
               </div>
               {scanState && (
-                <p className="mt-3 text-sm text-slate-400">
+                <p className="mt-3 text-sm text-slate-500">
                   {scanState}
                   {scanState.includes("running") && (
                     <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-brand-500" />
@@ -593,10 +841,10 @@ export default function ProjectDetailPage() {
             </div>
           )}
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
               <h3 className="font-semibold">Discovered pages ({pages.length})</h3>
-              <button onClick={runAnalysis} className="text-sm text-brand-400 hover:text-brand-300">
+              <button onClick={runAnalysis} className="text-sm text-brand-600 hover:text-brand-600">
                 Run architecture analysis →
               </button>
             </div>
@@ -605,7 +853,7 @@ export default function ProjectDetailPage() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                     <th className="px-6 py-3">URL</th>
                     <th className="px-6 py-3">Title</th>
                     <th className="px-6 py-3">Depth</th>
@@ -615,16 +863,16 @@ export default function ProjectDetailPage() {
                 </thead>
                 <tbody>
                   {pages.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-800/50 last:border-0">
-                      <td className="px-6 py-3 text-slate-200 font-mono text-xs">{p.url}</td>
-                      <td className="px-6 py-3 text-slate-400">{p.title || "—"}</td>
-                      <td className="px-6 py-3 text-slate-400">{p.depth}</td>
+                    <tr key={p.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 text-slate-800 font-mono text-xs">{p.url}</td>
+                      <td className="px-6 py-3 text-slate-500">{p.title || "—"}</td>
+                      <td className="px-6 py-3 text-slate-500">{p.depth}</td>
                       <td className="px-6 py-3">
                         <span
                           className={`rounded px-1.5 py-0.5 text-xs ${
                             p.status_code === 200
-                              ? "bg-emerald-500/10 text-emerald-400"
-                              : "bg-slate-500/10 text-slate-400"
+                              ? "bg-emerald-50 text-emerald-600"
+                              : "bg-slate-100 text-slate-500"
                           }`}
                         >
                           {p.status_code ?? "?"}
@@ -647,10 +895,10 @@ export default function ProjectDetailPage() {
 
       {/* ---------- APIs ---------- */}
       {tab === "apis" && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
             <h3 className="font-semibold">API inventory ({apis.length})</h3>
-            <button onClick={runAnalysis} className="text-sm text-brand-400 hover:text-brand-300">
+            <button onClick={runAnalysis} className="text-sm text-brand-600 hover:text-brand-600">
               Re-run analysis →
             </button>
           </div>
@@ -661,7 +909,7 @@ export default function ProjectDetailPage() {
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                   <th className="px-6 py-3">Method</th>
                   <th className="px-6 py-3">Path</th>
                   <th className="px-6 py-3">Group</th>
@@ -670,14 +918,14 @@ export default function ProjectDetailPage() {
               </thead>
               <tbody>
                 {apis.map((a) => (
-                  <tr key={a.id} className="border-b border-slate-800/50 last:border-0">
+                  <tr key={a.id} className="border-b border-slate-100 last:border-0">
                     <td className="px-6 py-3">
-                      <span className="rounded bg-brand-500/10 px-1.5 py-0.5 text-xs font-mono text-brand-400">
+                      <span className="rounded bg-brand-50 px-1.5 py-0.5 text-xs font-mono text-brand-600">
                         {a.method}
                       </span>
                     </td>
-                    <td className="px-6 py-3 font-mono text-xs text-slate-200">{a.path}</td>
-                    <td className="px-6 py-3 text-slate-400 capitalize">{a.group}</td>
+                    <td className="px-6 py-3 font-mono text-xs text-slate-800">{a.path}</td>
+                    <td className="px-6 py-3 text-slate-500 capitalize">{a.group}</td>
                     <td className="px-6 py-3 text-xs text-slate-500">{a.source}</td>
                   </tr>
                 ))}
@@ -690,7 +938,7 @@ export default function ProjectDetailPage() {
       {/* ---------- Test Plan ---------- */}
       {tab === "test-plan" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6 flex items-center justify-between">
             <div>
               <h3 className="font-semibold">Test plan</h3>
               {plan && (
@@ -712,7 +960,7 @@ export default function ProjectDetailPage() {
                   onClick={() => approvePlan(!plan.approved)}
                   className={`rounded-lg px-4 py-2 text-sm font-semibold ${
                     plan.approved
-                      ? "bg-slate-800 text-slate-300"
+                      ? "bg-slate-100 text-slate-700"
                       : "bg-emerald-600 hover:bg-emerald-500"
                   }`}
                 >
@@ -723,22 +971,22 @@ export default function ProjectDetailPage() {
           </div>
 
           {!plan ? (
-            <div className="rounded-xl border border-dashed border-slate-800 p-12 text-center text-slate-500">
+            <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
               No plan yet — generate one from discovery evidence.
             </div>
           ) : (
             <>
-              <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+              <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">
                   Objective
                 </h4>
-                <p className="text-sm text-slate-300">{plan.objective}</p>
+                <p className="text-sm text-slate-700">{plan.objective}</p>
               </div>
               <div className="space-y-2">
                 {plan.sections.map((s, i) => (
                   <div
                     key={i}
-                    className="rounded-xl border border-slate-800 bg-slate-900 px-5 py-4 flex items-start gap-4"
+                    className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-4 flex items-start gap-4"
                   >
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${
@@ -748,7 +996,7 @@ export default function ProjectDetailPage() {
                       {s.priority}
                     </span>
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-200">{s.section}</p>
+                      <p className="text-sm font-medium text-slate-800">{s.section}</p>
                       <p className="text-sm text-slate-500 mt-0.5">{s.content}</p>
                     </div>
                   </div>
@@ -762,7 +1010,7 @@ export default function ProjectDetailPage() {
       {/* ---------- Executions ---------- */}
       {tab === "executions" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6 flex items-center justify-between">
             <div>
               <h3 className="font-semibold">Test runs ({runs.length})</h3>
               <p className="text-sm text-slate-500 mt-0.5">
@@ -777,29 +1025,29 @@ export default function ProjectDetailPage() {
             </button>
           </div>
           {runs.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-800 p-12 text-center text-slate-500">
+            <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
               No runs yet — approve test cases, then start a run.
             </div>
           ) : (
             <div className="space-y-2">
               {runs.map((r) => (
-                <div key={r.id} className="rounded-xl border border-slate-800 bg-slate-900 px-5 py-4 flex items-center justify-between">
+                <div key={r.id} className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-4 flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-slate-200">{r.label}</p>
+                    <p className="text-sm font-medium text-slate-800">{r.label}</p>
                     <p className="text-xs text-slate-500">
                       {new Date(r.created_at).toLocaleString()} · browsers: {(r.browsers ?? []).join(", ")}
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className={`rounded-full px-2.5 py-0.5 text-xs capitalize ${
-                      r.status === "completed" ? "bg-emerald-500/10 text-emerald-400"
-                      : r.status === "running" ? "bg-brand-500/10 text-brand-400"
-                      : "bg-slate-800 text-slate-400"}`}>
+                      r.status === "completed" ? "bg-emerald-50 text-emerald-600"
+                      : r.status === "running" ? "bg-brand-50 text-brand-600"
+                      : "bg-slate-100 text-slate-500"}`}>
                       {r.status}
                     </span>
                     <Link
                       to={`/projects/${id}/runs/${r.id}`}
-                      className="text-sm text-brand-400 hover:text-brand-300"
+                      className="text-sm text-brand-600 hover:text-brand-600"
                     >
                       View live →
                     </Link>
@@ -814,7 +1062,7 @@ export default function ProjectDetailPage() {
       {/* ---------- Test Cases ---------- */}
       {tab === "test-cases" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6 flex items-center justify-between">
             <div>
               <h3 className="font-semibold">
                 Test cases ({cases.length})
@@ -845,7 +1093,7 @@ export default function ProjectDetailPage() {
                     await api.post(`/projects/${id}/test-cases/approve`, { refs: [] });
                     await loadCases();
                   }}
-                  className="rounded-lg bg-slate-800 hover:bg-slate-700 px-4 py-2 text-sm font-semibold"
+                  className="rounded-lg bg-slate-100 hover:bg-slate-200 px-4 py-2 text-sm font-semibold"
                 >
                   Approve all
                 </button>
@@ -854,7 +1102,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {cases.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-800 p-12 text-center text-slate-500">
+            <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
               No test cases yet — generate them from discovery data.
             </div>
           ) : (
@@ -862,7 +1110,7 @@ export default function ProjectDetailPage() {
               {cases.map((c) => (
                 <div
                   key={c.id}
-                  className="rounded-xl border border-slate-800 bg-slate-900 px-5 py-4"
+                  className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-4"
                 >
                   <div className="flex items-start gap-3">
                     <input
@@ -878,7 +1126,7 @@ export default function ProjectDetailPage() {
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-xs text-brand-400">{c.ref}</span>
+                        <span className="font-mono text-xs text-brand-600">{c.ref}</span>
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${
                             PRIORITY_STYLES[c.priority] ?? PRIORITY_STYLES.low
@@ -886,24 +1134,24 @@ export default function ProjectDetailPage() {
                         >
                           {c.priority}
                         </span>
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
                           {c.kind}
                         </span>
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
                           {c.module}
                         </span>
                         {c.approved && (
-                          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400">
+                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600">
                             approved
                           </span>
                         )}
                         {!c.enabled && (
-                          <span className="rounded bg-slate-500/10 px-1.5 py-0.5 text-[10px] text-slate-500">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
                             disabled
                           </span>
                         )}
                       </div>
-                      <p className="mt-1.5 text-sm text-slate-200">{c.scenario}</p>
+                      <p className="mt-1.5 text-sm text-slate-800">{c.scenario}</p>
                       <p className="mt-1 text-xs text-slate-500">
                         <span className="text-slate-600">Expected:</span> {c.expected_result}
                       </p>
@@ -911,7 +1159,7 @@ export default function ProjectDetailPage() {
                         {!c.approved && (
                           <button
                             onClick={() => reviewCase(c.ref, "approve")}
-                            className="rounded bg-emerald-600/20 px-2.5 py-1 text-xs text-emerald-400 hover:bg-emerald-600/30"
+                            className="rounded bg-emerald-50 px-2.5 py-1 text-xs text-emerald-600 hover:bg-emerald-600/30"
                           >
                             Approve
                           </button>
@@ -921,25 +1169,25 @@ export default function ProjectDetailPage() {
                             const next = window.prompt("Edit expected result", c.expected_result);
                             if (next !== null) reviewCase(c.ref, "approve", { expected_result: next });
                           }}
-                          className="rounded bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                          className="rounded bg-slate-100 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-200"
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => reviewCase(c.ref, "duplicate")}
-                          className="rounded bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                          className="rounded bg-slate-100 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-200"
                         >
                           Duplicate
                         </button>
                         <button
                           onClick={() => reviewCase(c.ref, c.enabled ? "disable" : "enable")}
-                          className="rounded bg-slate-800 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                          className="rounded bg-slate-100 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-200"
                         >
                           {c.enabled ? "Disable" : "Enable"}
                         </button>
                         <button
                           onClick={() => reviewCase(c.ref, "reject")}
-                          className="rounded bg-red-600/10 px-2.5 py-1 text-xs text-red-400 hover:bg-red-600/20"
+                          className="rounded bg-red-50 px-2.5 py-1 text-xs text-red-600 hover:bg-red-100"
                         >
                           Reject
                         </button>
@@ -956,14 +1204,14 @@ export default function ProjectDetailPage() {
       {tab === "quality" && (
         <div className="space-y-4">
           {!project.authorization_confirmed && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
               Authorization must be confirmed before running accessibility or performance modules.
             </div>
           )}
 
           {/* Accessibility */}
-          <div className="rounded-xl border border-slate-800 bg-slate-900">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
               <div>
                 <h3 className="font-semibold">Accessibility (WCAG)</h3>
                 <p className="text-sm text-slate-500 mt-0.5">Label, alt-text, heading, and ARIA checks on discovered pages</p>
@@ -977,7 +1225,7 @@ export default function ProjectDetailPage() {
               </button>
             </div>
             {a11yState && (
-              <p className="px-6 py-3 text-sm text-slate-400">
+              <p className="px-6 py-3 text-sm text-slate-500">
                 {a11yState}
                 {a11yState.includes("audit…") || a11yState.includes("starting") ? (
                   <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-brand-500" />
@@ -989,7 +1237,7 @@ export default function ProjectDetailPage() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                     <th className="px-6 py-3">Page</th>
                     <th className="px-6 py-3">Violations</th>
                     <th className="px-6 py-3">By severity</th>
@@ -998,16 +1246,16 @@ export default function ProjectDetailPage() {
                 </thead>
                 <tbody>
                   {a11y.map((r) => (
-                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
-                      <td className="px-6 py-3 font-mono text-xs text-slate-200 max-w-72 truncate">{r.page_url}</td>
+                    <tr key={r.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-mono text-xs text-slate-800 max-w-72 truncate">{r.page_url}</td>
                       <td className="px-6 py-3">
                         <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
-                          r.violation_count === 0 ? "bg-emerald-500/10 text-emerald-400"
-                          : "bg-red-500/10 text-red-400"}`}>
+                          r.violation_count === 0 ? "bg-emerald-50 text-emerald-600"
+                          : "bg-red-50 text-red-600"}`}>
                           {r.violation_count}
                         </span>
                       </td>
-                      <td className="px-6 py-3 text-xs text-slate-400">
+                      <td className="px-6 py-3 text-xs text-slate-500">
                         {Object.entries(r.by_severity).map(([sev, n]) => `${sev}:${n}`).join(" · ") || "—"}
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-500 max-w-96">
@@ -1022,8 +1270,8 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* Performance */}
-          <div className="rounded-xl border border-slate-800 bg-slate-900">
-            <div className="px-6 py-4 border-b border-slate-800">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="px-6 py-4 border-b border-slate-200">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold">Performance (smoke load)</h3>
@@ -1045,7 +1293,7 @@ export default function ProjectDetailPage() {
                   ["requests_per_second", "number", "RPS"],
                   ["max_response_time_ms", "number", "Max p95 (ms)"],
                 ] as const).map(([key, type, label]) => (
-                  <label key={key} className="text-xs text-slate-400">
+                  <label key={key} className="text-xs text-slate-500">
                     <span className="block mb-1">{label}</span>
                     <input
                       type={type}
@@ -1056,19 +1304,19 @@ export default function ProjectDetailPage() {
                           [key]: type === "number" ? Number(e.target.value) : e.target.value,
                         })
                       }
-                      className="w-24 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-sm"
+                      className="w-24 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm"
                     />
                   </label>
                 ))}
               </div>
-              {perfState && <p className="mt-3 text-sm text-slate-400">{perfState}</p>}
+              {perfState && <p className="mt-3 text-sm text-slate-500">{perfState}</p>}
             </div>
             {perf.length === 0 ? (
               <p className="px-6 py-8 text-sm text-slate-500">No performance results yet.</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                     <th className="px-6 py-3">When</th>
                     <th className="px-6 py-3">Path</th>
                     <th className="px-6 py-3">Requests</th>
@@ -1080,16 +1328,16 @@ export default function ProjectDetailPage() {
                 </thead>
                 <tbody>
                   {perf.map((r) => (
-                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
-                      <td className="px-6 py-3 text-xs text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
-                      <td className="px-6 py-3 font-mono text-xs text-slate-200">{r.scenario}</td>
-                      <td className="px-6 py-3 text-slate-400">{r.meta?.total_requests ?? "—"}</td>
-                      <td className="px-6 py-3 text-slate-300">{r.p50_ms} / {r.p95_ms} / {r.p99_ms}</td>
-                      <td className="px-6 py-3 text-slate-400">{r.throughput_rps}</td>
-                      <td className="px-6 py-3 text-slate-400">{(r.error_rate * 100).toFixed(1)}%</td>
+                    <tr key={r.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 text-xs text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-800">{r.scenario}</td>
+                      <td className="px-6 py-3 text-slate-500">{r.meta?.total_requests ?? "—"}</td>
+                      <td className="px-6 py-3 text-slate-700">{r.p50_ms} / {r.p95_ms} / {r.p99_ms}</td>
+                      <td className="px-6 py-3 text-slate-500">{r.throughput_rps}</td>
+                      <td className="px-6 py-3 text-slate-500">{(r.error_rate * 100).toFixed(1)}%</td>
                       <td className="px-6 py-3">
                         <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
-                          r.meta?.threshold_breached ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400"}`}>
+                          r.meta?.threshold_breached ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"}`}>
                           {r.meta?.threshold_breached ? "breached" : "ok"}
                         </span>
                       </td>
@@ -1101,34 +1349,574 @@ export default function ProjectDetailPage() {
           </div>
         </div>
       )}
+      {/* ---------- History & comparison (Phase 13, §21) ---------- */}
+      {tab === "history" && (
+        <div className="space-y-4">
+          {/* Comparison picker */}
+          <div className="card p-6">
+            <h3 className="font-semibold">Compare runs</h3>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Diff two executions: new, resolved, and persistent failures, test-set changes, performance deltas
+            </p>
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Base (older)</span>
+                <select
+                  value={compareBase}
+                  onChange={(e) => setCompareBase(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm min-w-56"
+                >
+                  <option value="">Select run…</option>
+                  {history.map((h) => (
+                    <option key={h.id} value={h.id}>{h.label}</option>
+                  ))}
+                </select>
+              </label>
+              <span className="pb-2.5 text-slate-400">→</span>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Target (newer)</span>
+                <select
+                  value={compareTarget}
+                  onChange={(e) => setCompareTarget(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm min-w-56"
+                >
+                  <option value="">Select run…</option>
+                  {history.map((h) => (
+                    <option key={h.id} value={h.id}>{h.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                onClick={runCompare}
+                disabled={!compareBase || !compareTarget || compareBase === compareTarget || compareBusy}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-5 py-2 text-sm font-semibold text-white"
+              >
+                {compareBusy ? "Comparing…" : "Compare"}
+              </button>
+            </div>
+          </div>
+
+          {compareResult && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  ["New failures", compareResult.new_failures.length, "text-red-600"],
+                  ["Resolved", compareResult.resolved_failures.length, "text-emerald-600"],
+                  ["Persistent", compareResult.persistent_failures.length, "text-amber-600"],
+                  ["Test set changed", compareResult.new_tests.length + compareResult.removed_tests.length, "text-slate-700"],
+                ].map(([label, value, cls]) => (
+                  <div key={label as string} className="card px-4 py-3">
+                    <p className="text-xs text-slate-500">{label}</p>
+                    <p className={`text-2xl font-bold ${cls}`}>{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="card p-5">
+                  <h4 className="text-sm font-semibold mb-3">New failures ({compareResult.new_failures.length})</h4>
+                  {compareResult.new_failures.length === 0 ? (
+                    <p className="text-sm text-slate-500">None 🎉</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {compareResult.new_failures.map((f) => (
+                        <li key={f.ref + f.browser} className="text-sm">
+                          <span className="font-mono text-xs text-brand-600">{f.ref}</span>
+                          <span className="ml-2 text-xs text-slate-500">{f.browser}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="card p-5">
+                  <h4 className="text-sm font-semibold mb-3">Resolved failures ({compareResult.resolved_failures.length})</h4>
+                  {compareResult.resolved_failures.length === 0 ? (
+                    <p className="text-sm text-slate-500">None</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {compareResult.resolved_failures.map((f) => (
+                        <li key={f.ref + f.browser} className="text-sm">
+                          <span className="font-mono text-xs text-brand-600">{f.ref}</span>
+                          <span className="ml-2 text-xs text-slate-500">{f.browser}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="card p-5">
+                  <h4 className="text-sm font-semibold mb-3">Persistent failures ({compareResult.persistent_failures.length})</h4>
+                  {compareResult.persistent_failures.length === 0 ? (
+                    <p className="text-sm text-slate-500">None</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {compareResult.persistent_failures.map((f) => (
+                        <li key={f.ref + f.browser} className="text-sm">
+                          <span className="font-mono text-xs text-brand-600">{f.ref}</span>
+                          <span className="ml-2 text-xs text-slate-500">{f.browser}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="card p-5">
+                  <h4 className="text-sm font-semibold mb-3">Test set changes</h4>
+                  <p className="text-xs text-slate-500 mb-2">
+                    +{compareResult.new_tests.length} new · −{compareResult.removed_tests.length} removed
+                  </p>
+                  <ul className="space-y-1 text-sm">
+                    {compareResult.new_tests.slice(0, 8).map((t) => (
+                      <li key={t.ref + t.browser} className="text-emerald-600">+ {t.ref} <span className="text-xs text-slate-400">({t.browser})</span></li>
+                    ))}
+                    {compareResult.removed_tests.slice(0, 8).map((t) => (
+                      <li key={t.ref + t.browser} className="text-slate-400">− {t.ref} <span className="text-xs text-slate-400">({t.browser})</span></li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {compareResult.performance_changes.length > 0 && (
+                <div className="card p-5">
+                  <h4 className="text-sm font-semibold mb-3">Performance changes</h4>
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                        <th className="py-2">Scenario</th>
+                        <th className="py-2">Base p95</th>
+                        <th className="py-2">Target p95</th>
+                        <th className="py-2">Δ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {compareResult.performance_changes.map((p) => (
+                        <tr key={p.scenario} className="border-b border-slate-100 last:border-0">
+                          <td className="py-2 font-mono text-xs">{p.scenario}</td>
+                          <td className="py-2">{p.base_p95_ms} ms</td>
+                          <td className="py-2">{p.target_p95_ms} ms</td>
+                          <td className={`py-2 font-semibold ${p.delta_p95_ms > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                            {p.delta_p95_ms > 0 ? "+" : ""}{p.delta_p95_ms} ms
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* History list with pass/fail trend */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Execution history ({history.length})</h3>
+            </div>
+            {history.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-slate-500">No runs yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Run</th>
+                    <th className="px-6 py-3">When</th>
+                    <th className="px-6 py-3">Browsers</th>
+                    <th className="px-6 py-3">Pass / Fail / Skip</th>
+                    <th className="px-6 py-3">Trend</th>
+                    <th className="px-6 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h) => {
+                    const total = Math.max(h.passed + h.failed + h.skipped + h.other, 1);
+                    const pct = (n: number) => (n * 100) / total;
+                    return (
+                      <tr key={h.id} className="border-b border-slate-100 last:border-0">
+                        <td className="px-6 py-3 text-slate-800 font-medium">{h.label}</td>
+                        <td className="px-6 py-3 text-xs text-slate-500">{new Date(h.created_at).toLocaleString()}</td>
+                        <td className="px-6 py-3 text-xs text-slate-500">{(h.browsers ?? []).join(", ")}</td>
+                        <td className="px-6 py-3 text-xs">
+                          <span className="text-emerald-600 font-semibold">{h.passed}</span>
+                          <span className="text-slate-400"> / </span>
+                          <span className="text-red-600 font-semibold">{h.failed}</span>
+                          <span className="text-slate-400"> / {h.skipped}</span>
+                        </td>
+                        <td className="px-6 py-3">
+                          <div className="flex h-2 w-32 overflow-hidden rounded-full bg-slate-100">
+                            <div className="bg-emerald-400" style={{ width: `${pct(h.passed)}%` }} />
+                            <div className="bg-red-400" style={{ width: `${pct(h.failed)}%` }} />
+                            <div className="bg-slate-300" style={{ width: `${pct(h.skipped + h.other)}%` }} />
+                          </div>
+                        </td>
+                        <td className="px-6 py-3">
+                          <span className={`rounded-full px-2.5 py-0.5 text-xs capitalize ${
+                            h.status === "completed" ? "bg-emerald-50 text-emerald-600"
+                            : h.status === "running" ? "bg-brand-50 text-brand-600"
+                            : "bg-slate-100 text-slate-500"}`}>
+                            {h.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Assistant (Phase 14, §22) ---------- */}
+      {tab === "assistant" && (
+        <div className="card max-w-3xl flex flex-col" style={{ minHeight: 480 }}>
+          <div className="px-6 py-4 border-b border-slate-200">
+            <h3 className="font-semibold">AI QA Assistant</h3>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Grounded in your real QA data — every number comes from live queries, never invented
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-6 space-y-3">
+            {chat.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm ${
+                    m.role === "user"
+                      ? "bg-brand-600 text-white rounded-br-sm"
+                      : "bg-slate-100 text-slate-800 rounded-bl-sm"
+                  }`}
+                >
+                  {m.text}
+                  {m.role === "assistant" && m.intent && (
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <span className="rounded bg-white/70 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+                        {m.intent}
+                      </span>
+                      {m.grounded && (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600">
+                          grounded ✓
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {chatBusy && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl bg-slate-100 px-4 py-2.5 text-sm text-slate-400">thinking…</div>
+              </div>
+            )}
+          </div>
+          <div className="px-6 py-4 border-t border-slate-200">
+            <div className="flex flex-wrap gap-2 mb-3">
+              {["Give me a QA summary", "Why did tests fail?", "Show critical failures", "Compare the last two runs"].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setChatInput(q)}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                askAssistant();
+              }}
+              className="flex gap-2"
+            >
+              <input
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                placeholder="Ask about failures, defects, latency, security…"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={chatBusy || !chatInput.trim()}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Test data (Phase 14, §17) ---------- */}
+      {tab === "test-data" && (
+        <div className="space-y-4">
+          {/* Environments */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Environments ({envs.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Named targets with per-environment variables</p>
+            </div>
+            {envs.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No environments yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Name</th>
+                    <th className="px-6 py-3">Base URL</th>
+                    <th className="px-6 py-3">Variables</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {envs.map((e) => (
+                    <tr key={e.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-medium text-slate-800">{e.name}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-500 max-w-56 truncate">{e.base_url || "—"}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-500">
+                        {Object.entries(e.variables).map(([k, v]) => `${k}=${v}`).join(" · ") || "—"}
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <button
+                          onClick={() => deleteEnv(e.id)}
+                          className="rounded bg-red-50 px-2.5 py-1 text-xs text-red-600 hover:bg-red-100"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Name</span>
+                <input
+                  value={envForm.name}
+                  onChange={(e) => setEnvForm({ ...envForm, name: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Base URL (optional)</span>
+                <input
+                  value={envForm.base_url}
+                  onChange={(e) => setEnvForm({ ...envForm, base_url: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-64"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Variables (JSON)</span>
+                <input
+                  value={envForm.varsText}
+                  onChange={(e) => setEnvForm({ ...envForm, varsText: e.target.value })}
+                  placeholder='{"user": "alice"}'
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-72 font-mono"
+                />
+              </label>
+              <button
+                onClick={saveEnv}
+                disabled={!envForm.name.trim()}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Add environment
+              </button>
+            </div>
+          </div>
+
+          {/* Datasets */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Datasets ({datasets.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Static values (secrets encrypted at rest, masked in the UI) or generated data — active datasets are merged into every run
+              </p>
+            </div>
+            {datasets.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No datasets yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Name</th>
+                    <th className="px-6 py-3">Kind</th>
+                    <th className="px-6 py-3">Environment</th>
+                    <th className="px-6 py-3">Values</th>
+                    <th className="px-6 py-3">Active</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {datasets.map((d) => (
+                    <tr key={d.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-medium text-slate-800">{d.name}</td>
+                      <td className="px-6 py-3">
+                        <span className="rounded bg-brand-50 px-1.5 py-0.5 text-xs text-brand-600">{d.kind}</span>
+                        {d.kind === "generated" && d.generator && (
+                          <span className="ml-1.5 text-xs text-slate-500">({d.generator})</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-500">
+                        {d.environment_id ? envs.find((e) => e.id === d.environment_id)?.name ?? "—" : "all"}
+                      </td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-500 max-w-72 truncate">
+                        {Object.entries(d.values).map(([k, v]) => `${k}=${v}`).join(" · ") || "—"}
+                      </td>
+                      <td className="px-6 py-3">
+                        <button
+                          onClick={() => toggleDataset(d)}
+                          className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                            d.is_active ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {d.is_active ? "active" : "inactive"}
+                        </button>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <button
+                          onClick={() => deleteDataset(d.id)}
+                          className="rounded bg-red-50 px-2.5 py-1 text-xs text-red-600 hover:bg-red-100"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Name</span>
+                <input
+                  value={dsForm.name}
+                  onChange={(e) => setDsForm({ ...dsForm, name: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Kind</span>
+                <select
+                  value={dsForm.kind}
+                  onChange={(e) => setDsForm({ ...dsForm, kind: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="static">static (encrypted)</option>
+                  <option value="generated">generated</option>
+                </select>
+              </label>
+              {dsForm.kind === "generated" && (
+                <label className="text-xs text-slate-500">
+                  <span className="block mb-1">Generator</span>
+                  <select
+                    value={dsForm.generator}
+                    onChange={(e) => setDsForm({ ...dsForm, generator: e.target.value })}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  >
+                    {["user", "email", "string", "uuid", "int"].map((g) => (
+                      <option key={g} value={g}>{g}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Environment</span>
+                <select
+                  value={dsForm.envId}
+                  onChange={(e) => setDsForm({ ...dsForm, envId: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">All environments</option>
+                  {envs.map((e) => (
+                    <option key={e.id} value={e.id}>{e.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Values (JSON)</span>
+                <input
+                  value={dsForm.valuesText}
+                  onChange={(e) => setDsForm({ ...dsForm, valuesText: e.target.value })}
+                  placeholder='{"password": "s3cret", "username": "qa_user"}'
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-80 font-mono"
+                />
+              </label>
+              <button
+                onClick={saveDataset}
+                disabled={!dsForm.name.trim()}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Add dataset
+              </button>
+            </div>
+          </div>
+
+          {/* Resolution preview */}
+          <div className="card p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">Resolution preview</h3>
+                <p className="text-sm text-slate-500 mt-0.5">The exact variables executors receive — secrets masked</p>
+              </div>
+              <div className="flex items-end gap-3">
+                <select
+                  value={dsForm.envId}
+                  onChange={(e) => setDsForm({ ...dsForm, envId: e.target.value })}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">All environments</option>
+                  {envs.map((e) => (
+                    <option key={e.id} value={e.id}>{e.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={previewResolved}
+                  className="rounded-lg bg-slate-100 hover:bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+                >
+                  Preview variables
+                </button>
+              </div>
+            </div>
+            {resolvedPreview && (
+              <div className="mt-4 rounded-lg bg-slate-50 p-4">
+                <p className="text-xs text-slate-500 mb-2">{resolvedPreview.count} variable(s) resolved</p>
+                <div className="font-mono text-xs text-slate-700 space-y-0.5">
+                  {Object.entries(resolvedPreview.variables).map(([k, v]) => (
+                    <div key={k}>{k}={v}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="mt-3 text-xs text-slate-400">
+              Secrets never appear in logs or reports; they are decrypted only at execution time inside the worker.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ---------- Reports (Phase 12) ---------- */}
       {tab === "reports" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
             <h3 className="font-semibold">Generate report</h3>
             <p className="text-sm text-slate-500 mt-0.5">
               CSV · Excel · PDF · HTML (with embedded evidence screenshots) · JSON — includes plan,
               executions, defects, security, performance, accessibility, and recommendations
             </p>
             <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="text-xs text-slate-400">
+              <label className="text-xs text-slate-500">
                 <span className="block mb-1">Format</span>
                 <select
                   value={reportReq.format}
                   onChange={(e) => setReportReq({ ...reportReq, format: e.target.value })}
-                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                 >
                   {["pdf", "html", "xlsx", "csv", "json"].map((f) => (
                     <option key={f} value={f}>{f.toUpperCase()}</option>
                   ))}
                 </select>
               </label>
-              <label className="text-xs text-slate-400">
+              <label className="text-xs text-slate-500">
                 <span className="block mb-1">Scope</span>
                 <select
                   value={reportReq.runId}
                   onChange={(e) => setReportReq({ ...reportReq, runId: e.target.value })}
-                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                 >
                   <option value="">Whole project</option>
                   {runs.map((r) => (
@@ -1143,12 +1931,12 @@ export default function ProjectDetailPage() {
               >
                 Generate
               </button>
-              {reportState && <span className="text-sm text-slate-400">{reportState}</span>}
+              {reportState && <span className="text-sm text-slate-500">{reportState}</span>}
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900">
-            <div className="px-6 py-4 border-b border-slate-800">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="px-6 py-4 border-b border-slate-200">
               <h3 className="font-semibold">Reports ({reports.length})</h3>
             </div>
             {reports.length === 0 ? (
@@ -1156,7 +1944,7 @@ export default function ProjectDetailPage() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
                     <th className="px-6 py-3">Generated</th>
                     <th className="px-6 py-3">Format</th>
                     <th className="px-6 py-3">Scope</th>
@@ -1167,24 +1955,24 @@ export default function ProjectDetailPage() {
                 </thead>
                 <tbody>
                   {reports.map((r) => (
-                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
-                      <td className="px-6 py-3 text-xs text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
+                    <tr key={r.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 text-xs text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
                       <td className="px-6 py-3">
-                        <span className="rounded bg-brand-500/10 px-1.5 py-0.5 text-xs font-mono uppercase text-brand-400">
+                        <span className="rounded bg-brand-50 px-1.5 py-0.5 text-xs font-mono uppercase text-brand-600">
                           {r.format}
                         </span>
                       </td>
-                      <td className="px-6 py-3 text-xs text-slate-400">
+                      <td className="px-6 py-3 text-xs text-slate-500">
                         {r.test_run_id ? runs.find((x) => x.id === r.test_run_id)?.label ?? "run" : "whole project"}
                       </td>
-                      <td className="px-6 py-3 text-xs text-slate-400">
+                      <td className="px-6 py-3 text-xs text-slate-500">
                         {r.meta?.executions != null ? `${r.meta.executions} (${r.meta.failed ?? 0} failed)` : "—"}
                       </td>
                       <td className="px-6 py-3">
                         <span className={`rounded px-1.5 py-0.5 text-xs font-semibold capitalize ${
-                          r.status === "completed" ? "bg-emerald-500/10 text-emerald-400"
-                          : r.status === "failed" ? "bg-red-500/10 text-red-400"
-                          : "bg-slate-500/10 text-slate-400"}`}>
+                          r.status === "completed" ? "bg-emerald-50 text-emerald-600"
+                          : r.status === "failed" ? "bg-red-50 text-red-600"
+                          : "bg-slate-100 text-slate-500"}`}>
                           {r.status}
                         </span>
                       </td>
@@ -1192,7 +1980,7 @@ export default function ProjectDetailPage() {
                         {r.status === "completed" && (
                           <button
                             onClick={() => downloadReport(r.id)}
-                            className="rounded bg-slate-800 px-3 py-1.5 text-xs text-brand-400 hover:bg-slate-700"
+                            className="rounded bg-slate-100 px-3 py-1.5 text-xs text-brand-600 hover:bg-slate-200"
                           >
                             Download
                           </button>

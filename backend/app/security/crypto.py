@@ -31,6 +31,27 @@ def decrypt_json(blob: str) -> dict:
         return {}
 
 
+def encrypt_secret(value: str) -> str:
+    """Encrypt a single secret string (e.g. a UI-managed LLM API key)."""
+    return _fernet().encrypt(value.encode()).decode()
+
+
+def decrypt_secret(blob: str) -> str:
+    try:
+        return _fernet().decrypt(blob.encode()).decode()
+    except (InvalidToken, ValueError):
+        return ""
+
+
+def mask_secret(value: str) -> str:
+    """Masked preview for API responses: first 3 chars + dots + last 2."""
+    if not value:
+        return _MASK
+    if len(value) <= 6:
+        return _MASK
+    return f"{value[:3]}••••{value[-2:]}"
+
+
 def mask_secrets(data: dict) -> dict:
     """Return a copy with secret values masked — for API responses/UI."""
     masked = {}

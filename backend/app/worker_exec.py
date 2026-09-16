@@ -28,6 +28,7 @@ def execute_test(
     project_id: str,
     base_url: str,
     case: dict,
+    variables: dict | None = None,
     browser: str = "chromium",
     attempt: int = 1,
     max_attempts: int = 1,
@@ -60,17 +61,20 @@ def execute_test(
         )
 
         started = time_start()
+        # §17: resolved test data (env vars + datasets). Secrets live here —
+        # never logged, only substituted into {{placeholders}} at execution time.
+        resolved_vars = dict(variables or {})
+        if case.get("variables"):
+            resolved_vars.update(case["variables"])
         if case.get("kind") == "api":
             from app.execution.api_exec import ApiExecutor
 
-            result = ApiExecutor(
-                base_url, variables=case.get("variables") or {}
-            ).run(case.get("steps", []))
+            result = ApiExecutor(base_url, variables=resolved_vars).run(case.get("steps", []))
         else:
             from app.execution.browser import BrowserExecutor
 
             shot_key = f"executions/{execution_id}/screenshot-attempt{attempt}.png"
-            result = BrowserExecutor(browser_name=browser).run(
+            result = BrowserExecutor(browser_name=browser, variables=resolved_vars).run(
                 case.get("steps", []),
                 screenshot_key=shot_key,
                 capture_on_pass=bool(case.get("capture_on_pass", False)),
@@ -94,6 +98,7 @@ def execute_test(
                     "project_id": project_id,
                     "base_url": base_url,
                     "case": case,
+                    "variables": resolved_vars,
                     "browser": browser,
                     "attempt": attempt + 1,
                     "max_attempts": max_attempts,
@@ -181,8 +186,39 @@ def _maybe_finalize_run(test_run_id: str) -> None:
             from app.worker_tasks import _publish_progress
 
             _publish_progress(f"run:{test_run_id}", {"event": "run_completed"})
+            _notify_run_completed(db, run)
     finally:
         db.close()
+
+
+def _notify_run_completed(db, run) -> None:
+    """In-app notification to the project owner (respects their settings)."""
+    try:
+        from app.models import Project
+        from app.notifications import notify_user
+
+        failed = (
+            db.execute(
+                sa.select(sa.func.count()).select_from(TestExecution).where(
+                    TestExecution.test_run_id == run.id,
+                    TestExecution.status == TestStatus.failed,
+                )
+            ).scalar_one()
+            or 0
+        )
+        owner_id = db.execute(sa.select(Project.owner_id).where(Project.id == run.project_id)).scalar_one()
+        kind = "run_failed_tests" if failed else "run_completed"
+        notify_user(
+            db,
+            owner_id,
+            kind,
+            f"Run {run.label or run.id[:8]} completed",
+            f"{failed} failed test(s)" if failed else "All tests passed",
+            f"/projects/{run.project_id}/runs/{run.id}",
+            project_id=str(run.project_id),
+        )
+    except Exception:
+        pass  # notifications must never break run finalization
 
 
 def run_status_completed():

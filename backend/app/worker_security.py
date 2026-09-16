@@ -63,6 +63,18 @@ def run_security_scan(
             "total_findings": len(report.findings),
         }
         _publish_progress(progress_channel, {"event": "scan_completed", **result})
+        try:
+            from app.notifications import notify_admins
+
+            notify_admins(
+                "security_scan_completed",
+                f"Security scan completed ({tier})",
+                f"{result['total_findings']} finding(s)",
+                "/projects",
+                project_id=project_id,
+            )
+        except Exception:
+            pass
         return result
     except Exception as exc:
         return {"scan_id": scan_id, "status": "failed", "error": str(exc)}

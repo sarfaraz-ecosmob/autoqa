@@ -57,6 +57,19 @@ def generate_report(
         }
         db.commit()
 
+        try:
+            from app.notifications import notify_admins
+
+            notify_admins(
+                "report_ready",
+                f"Report ready ({fmt.upper()})",
+                f"{data['counters']['total']} executions, pass rate {data['counters']['pass_rate']}%",
+                "/projects",
+                project_id=project_id,
+            )
+        except Exception:
+            pass
+
         if progress_channel:
             _publish_progress(progress_channel, {"event": "report_completed", "report_id": report_id})
 

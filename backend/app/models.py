@@ -115,6 +115,73 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[Role] = mapped_column(Enum(Role), default=Role.tester)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    preferences: Mapped[dict] = mapped_column(JSON, default=dict)  # theme, notification prefs cache
+
+
+class LlmSetting(Base, TimestampMixin):
+    """Singleton row (id=1): UI-managed AI provider config (spec §1, §22).
+
+    The API key is encrypted at rest with Fernet (§17) — never returned to
+    the client, only a masked preview. DB values override env config.
+    """
+    __tablename__ = "llm_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    provider: Mapped[str] = mapped_column(String(20), default="none")  # none | openai | openrouter
+    base_url: Mapped[str] = mapped_column(String(500), default="")
+    model: Mapped[str] = mapped_column(String(200), default="auto")  # "auto" = best free model
+    api_key_encrypted: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class Notification(Base, TimestampMixin):
+    __tablename__ = "notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    kind: Mapped[str] = mapped_column(String(50))  # run_completed | security_scan | report | a11y ...
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    link: Mapped[str] = mapped_column(String(500), default="")
+    read_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NotificationSetting(Base, TimestampMixin):
+    __tablename__ = "notification_settings"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    events: Mapped[dict] = mapped_column(JSON, default=dict)  # {run_completed: true, ...}
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_address: Mapped[str] = mapped_column(String(320), default="")
+
+
+class TestEnvironment(Base, TimestampMixin):
+    """Named target environment (staging, prod-like...) — spec §17."""
+    __tablename__ = "test_environments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))  # staging | uat | prod-mirror
+    base_url: Mapped[str] = mapped_column(String(2048), default="")
+    variables: Mapped[dict] = mapped_column(JSON, default=dict)  # non-secret env vars
+
+
+class TestDataset(Base, TimestampMixin):
+    """Managed test data with per-environment overrides — spec §17.
+
+    Secret values (username/password/api_key/...) are Fernet-encrypted at rest
+    and masked in every API response; generation params feed faker-style
+    synthesis at execution time.
+    """
+    __tablename__ = "test_datasets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(20), default="static")  # static | generated
+    generator: Mapped[str] = mapped_column(String(50), default="")  # user | email | string | uuid | none
+    generator_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    values: Mapped[dict] = mapped_column(JSON, default=dict)  # {key: value-or-encrypted}
+    encrypted_keys: Mapped[list] = mapped_column(JSON, default=list)  # keys stored encrypted
+    environment_id: Mapped[str | None] = mapped_column(ForeignKey("test_environments.id"), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Project(Base, TimestampMixin):

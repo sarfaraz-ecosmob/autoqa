@@ -190,15 +190,17 @@ Derived from `instructions.md` (autonomous QA platform: discovery → analysis �
 - [ ] Diffs: new failures, resolved failures, persistent failures, new/removed tests, performance changes
 - [ ] Comparison view in UI; **Docker gate:** two runs of `demo-app` (one with an injected defect) produce a meaningful diff
 
-## Phase 14 — AI assistant & test data management (§22, §17)
+## Phase 14 — AI assistant & test data management (§22, §17) ✅
 
 **Goal:** Grounded QA copilot + safe test data handling.
 
-- [ ] Assistant answering from actual project data (tool-calling/query over project tables — no hallucination): failure whys, critical lists, module defects, regression generation, run comparison, client summaries, API latency
-- [ ] Test data management: static, generated, JSON, CSV, env vars; secrets encrypted at rest, masked in UI, never in logs
-- [ ] **Docker gate:** assistant questions about the seeded demo project return correct, data-grounded answers in Compose
+- [x] Assistant answering from actual project data (tool-calling/query over project tables — no hallucination): failure whys, critical lists, module defects, regression generation, run comparison, client summaries, API latency — chat panel on every project (`assistant` tab), intent-routed queries, LLM only rephrases verified data
+- [x] LLM layer: OpenRouter support with UI-managed key (Settings → AI, Fernet-encrypted at rest, DB overrides .env), **auto-detection of the best free model** from the live /models catalog (modality-aware, family-ranked) and a rotation chain that skips rate-limited/retired/harness-only models (learned failure cache)
+- [x] Test data management: environments (named targets, per-env variables), datasets (static with Fernet-encrypted secrets, generated via deterministic seeded generators), resolution preview (masked), executors substitute `{{placeholders}}`; env-scoped datasets only apply to their environment; secrets decrypted only inside the execution path — never in logs/API/reports
+- [x] Also: password change, notification center + per-event settings, header bell with unread badge, worker-emitted notifications (run completion, report ready, security scan)
+- [x] **Docker gate:** assistant questions about the seeded demo project returned correct, data-grounded answers (80 executions / 68.8% pass rate from real data); secret masking verified end-to-end; live OpenRouter completion with the user's own key; 14+2 execution run dispatched with `environment_id`
 
-## Phase 15 — Production hardening & CI/CD (§29)
+## Phase 15 — Production hardening & CI/CD (§29) ← next
 
 **Goal:** Production-ready delivery on Docker Compose.
 
