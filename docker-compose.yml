@@ -35,6 +35,7 @@ services:
       AUTOQA_INTERNAL_TARGETS: ${AUTOQA_INTERNAL_TARGETS:-demo-app,demo-app:9000}
     volumes:
       - ./backend:/app
+      - artifacts:/data/artifacts
     depends_on:
       redis:
         condition: service_healthy
@@ -99,7 +100,7 @@ services:
   # ---------- Workers ----------
   worker:
     build: ./backend
-    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --hostname=worker@%h
+    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=autoqa,reports,celery --hostname=worker@%h
     environment:
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
@@ -111,6 +112,7 @@ services:
       AUTOQA_MINIO_BUCKET: ${AUTOQA_MINIO_BUCKET:-autoqa-artifacts}
     volumes:
       - ./backend:/app
+      - artifacts:/data/artifacts
     depends_on:
       redis:
         condition: service_healthy
@@ -142,6 +144,7 @@ services:
       AUTOQA_INTERNAL_TARGETS: ${AUTOQA_INTERNAL_TARGETS:-demo-app,demo-app:9000}
     volumes:
       - ./backend:/app
+      - artifacts:/data/artifacts
     depends_on:
       redis:
         condition: service_healthy
@@ -204,6 +207,7 @@ services:
 volumes:
   pgdata:
   miniodata:
+  artifacts:
 
 networks:
   edge:

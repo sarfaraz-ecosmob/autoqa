@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Project, TestExecution, TestCase, TestRun, TestStatus
+from app.models import Artifact, Project, TestExecution, TestCase, TestRun, TestStatus
 from app.tasks import celery_app
 
 
@@ -71,7 +71,9 @@ def execute_test(
 
             shot_key = f"executions/{execution_id}/screenshot-attempt{attempt}.png"
             result = BrowserExecutor(browser_name=browser).run(
-                case.get("steps", []), screenshot_key=shot_key
+                case.get("steps", []),
+                screenshot_key=shot_key,
+                capture_on_pass=bool(case.get("capture_on_pass", False)),
             )
 
         duration_ms = int((time_end() - started) * 1000)
@@ -109,6 +111,18 @@ def execute_test(
             **({"evidence": result["evidence"]} if result.get("evidence") else {}),
             "log": result.get("log", []),
         }
+
+        # Register screenshot evidence as an Artifact row (§23; feeds §19 reports)
+        shot_stored = (result.get("evidence") or {}).get("screenshot")
+        if shot_stored:
+            db.add(
+                Artifact(
+                    execution_id=execution_id,
+                    kind="screenshot",
+                    storage_key=shot_stored,
+                    meta={"browser": browser, "attempt": attempt, "ref": case.get("ref", "")},
+                )
+            )
         db.commit()
 
         _publish_event(

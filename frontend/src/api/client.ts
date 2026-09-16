@@ -67,3 +67,21 @@ export function patch<T>(path: string, body?: unknown): Promise<T> {
 export function del<T>(path: string): Promise<T> {
   return request<T>(path, { method: "DELETE" });
 }
+
+export async function download(path: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  const blob = await res.blob();
+  const cd = res.headers.get("Content-Disposition") || "";
+  const match = /filename="?([^";]+)"?/.exec(cd);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = match ? match[1] : "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}

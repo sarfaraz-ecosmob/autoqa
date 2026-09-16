@@ -32,6 +32,7 @@ class ReviewActionIn(BaseModel):
     expected_result: str | None = None
     test_data: dict | None = None
     scenario: str | None = None
+    capture_on_pass: bool | None = None  # screenshot evidence on PASS too (§12/§19)
 
 
 class ApproveIn(BaseModel):
@@ -53,6 +54,7 @@ def _serialize(tc: TestCase) -> dict:
         "kind": tc.kind,
         "enabled": tc.enabled,
         "approved": tc.approved,
+        "capture_on_pass": tc.capture_on_pass,
     }
 
 
@@ -172,6 +174,7 @@ def review_case(
             steps=tc.steps,
             expected_result=tc.expected_result,
             kind=tc.kind,
+            capture_on_pass=tc.capture_on_pass,
         )
         db.add(dup)
         db.commit()
@@ -186,6 +189,8 @@ def review_case(
         tc.test_data = body.test_data
     if body.scenario is not None:
         tc.scenario = body.scenario
+    if body.capture_on_pass is not None:
+        tc.capture_on_pass = body.capture_on_pass
 
     db.commit()
     audit_record(f"testcases.{body.action}", user.id, "test_case", tc.id)

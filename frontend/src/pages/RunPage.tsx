@@ -6,6 +6,7 @@ interface Live {
   status: string;
   counters: Record<string, number>;
   recent: {
+    execution_id: string;
     ref: string;
     status: string;
     attempt: number;
@@ -38,12 +39,39 @@ interface LogLine {
   text: string;
 }
 
+interface MatrixRow {
+  ref: string;
+  scenario: string;
+  module: string;
+  chromium: string;
+  firefox: string;
+  webkit: string;
+}
+
+interface MatrixData {
+  browsers: string[];
+  rows: MatrixRow[];
+  summary: Record<string, { passed: number; failed: number }>;
+}
+
+interface Evidence {
+  execution_id: string;
+  ref: string;
+  status: string;
+  actual_result: string;
+  error_details: Record<string, unknown>;
+  console: string[];
+  screenshot_base64: string | null;
+}
+
 export default function RunPage() {
   const { id = "", runId = "" } = useParams();
   const [run, setRun] = useState<RunRow | null>(null);
   const [live, setLive] = useState<Live | null>(null);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [connected, setConnected] = useState(false);
+  const [matrix, setMatrix] = useState<MatrixData | null>(null);
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -96,6 +124,29 @@ export default function RunPage() {
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [logLines]);
+
+  const loadMatrix = useCallback(async () => {
+    try {
+      setMatrix(await api.get<MatrixData>(`/projects/${id}/quality/browser-matrix?run_id=${runId}`));
+    } catch {
+      setMatrix(null);
+    }
+  }, [id, runId]);
+
+  // Load the cross-browser matrix once the run finishes (data is final then)
+  useEffect(() => {
+    if (live?.status === "completed" || live?.status === "stopped" || live?.status === "failed") {
+      loadMatrix();
+    }
+  }, [live?.status, loadMatrix]);
+
+  async function openEvidence(executionId: string) {
+    try {
+      setEvidence(await api.get<Evidence>(`/projects/${id}/executions/${executionId}/evidence`));
+    } catch {
+      setEvidence(null);
+    }
+  }
 
   async function control(action: string) {
     await api.post(`/projects/${id}/test-runs/${runId}/${action}`);
@@ -191,7 +242,12 @@ export default function RunPage() {
             <table className="w-full text-sm">
               <tbody>
                 {(live?.recent ?? []).map((r) => (
-                  <tr key={r.ref + r.attempt} className="border-b border-slate-800/50 last:border-0">
+                  <tr
+                    key={r.ref + r.attempt}
+                    className="border-b border-slate-800/50 last:border-0 cursor-pointer hover:bg-slate-800/40"
+                    onClick={() => openEvidence(r.execution_id)}
+                    title="View evidence (screenshot, console)"
+                  >
                     <td className="px-4 py-2 font-mono text-xs text-brand-400">{r.ref}</td>
                     <td className={`px-2 py-2 text-xs font-semibold uppercase ${STATUS_STYLES[r.status] ?? ""}`}>
                       {r.status}
@@ -204,8 +260,101 @@ export default function RunPage() {
               </tbody>
             </table>
           </div>
+          <div className="px-5 py-2 border-t border-slate-800 text-[11px] text-slate-600">
+            Click a row to view its evidence (screenshot &amp; console)
+          </div>
         </div>
       </div>
+
+      {/* Cross-browser matrix (§16) — visible once the run has data */}
+      {matrix && matrix.rows.length > 0 && (
+        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900">
+          <div className="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+            <span className="text-sm font-semibold">Cross-browser matrix</span>
+            <span className="text-xs text-slate-500">
+              {matrix.browsers.map((b) => (
+                <span key={b} className="ml-3">
+                  {b}: <span className="text-emerald-400">{matrix.summary[b]?.passed ?? 0}✓</span>{" "}
+                  <span className="text-red-400">{matrix.summary[b]?.failed ?? 0}✗</span>
+                </span>
+              ))}
+            </span>
+          </div>
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <th className="px-5 py-2.5">Test case</th>
+                  {matrix.browsers.map((b) => (
+                    <th key={b} className="px-5 py-2.5 capitalize">{b}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.rows.map((row) => (
+                  <tr key={row.ref} className="border-b border-slate-800/50 last:border-0">
+                    <td className="px-5 py-2.5">
+                      <span className="font-mono text-xs text-brand-400">{row.ref}</span>
+                      <span className="ml-2 text-xs text-slate-500">{row.scenario.slice(0, 60)}</span>
+                    </td>
+                    {matrix.browsers.map((b) => {
+                      const s = (row as unknown as Record<string, string>)[b] ?? "skipped";
+                      return (
+                        <td key={b} className="px-5 py-2.5">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                            s === "passed" ? "bg-emerald-500/10 text-emerald-400"
+                            : s === "failed" ? "bg-red-500/10 text-red-400"
+                            : "bg-slate-500/10 text-slate-500"}`}>
+                            {s}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Evidence viewer (screenshot + console, §12) */}
+      {evidence && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8" onClick={() => setEvidence(null)}>
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-xl max-w-3xl w-full max-h-[85vh] overflow-auto p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <p className="font-mono text-sm text-brand-400">{evidence.ref}</p>
+                <p className={`text-sm font-semibold uppercase ${STATUS_STYLES[evidence.status] ?? ""}`}>
+                  {evidence.status}
+                </p>
+              </div>
+              <button onClick={() => setEvidence(null)} className="text-slate-500 hover:text-slate-300 text-xl leading-none">×</button>
+            </div>
+            {evidence.actual_result && (
+              <p className="text-sm text-slate-300 mb-4">{evidence.actual_result}</p>
+            )}
+            {evidence.screenshot_base64 ? (
+              <img
+                src={`data:image/png;base64,${evidence.screenshot_base64}`}
+                alt={`Evidence for ${evidence.ref}`}
+                className="w-full rounded-lg border border-slate-700 mb-4"
+              />
+            ) : (
+              <p className="text-xs text-slate-500 mb-4">No screenshot captured for this execution.</p>
+            )}
+            {evidence.console.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Browser console</p>
+                <pre className="bg-slate-950 rounded-lg p-3 text-xs text-slate-400 overflow-auto max-h-40">{evidence.console.join("\n")}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

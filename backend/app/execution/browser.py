@@ -11,8 +11,13 @@ class BrowserExecutor:
         self.browser_name = browser_name
         self.viewport = viewport or {"width": 1280, "height": 720}
 
-    def run(self, steps: list[dict], screenshot_key: str | None = None) -> dict:
-        """Execute browser steps; returns {status, actual_result, error_details, log, evidence}."""
+    def run(self, steps: list[dict], screenshot_key: str | None = None, capture_on_pass: bool = False) -> dict:
+        """Execute browser steps; returns {status, actual_result, error_details, log, evidence}.
+
+        capture_on_pass: also store a screenshot when the case passes (useful
+        visual evidence for reports — spec §19). Failure screenshots are always
+        captured when a key is provided (spec §12).
+        """
         from playwright.sync_api import sync_playwright
 
         log: list[dict] = []
@@ -94,7 +99,8 @@ class BrowserExecutor:
                 error = {"type": "step_error", "exception": type(exc).__name__, "message": str(exc)}
                 log.append({"action": "exception", "result": "fail", "error": str(exc)[:500]})
             finally:
-                if error and screenshot_key:
+                should_capture = bool(screenshot_key) and (bool(error) or capture_on_pass)
+                if should_capture:
                     try:
                         shot = page.screenshot(full_page=False)
                         from app import storage

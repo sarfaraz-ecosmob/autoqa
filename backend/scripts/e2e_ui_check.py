@@ -41,6 +41,29 @@ def main() -> int:
             page.wait_for_timeout(400)
         print("[4] project detail tabs render OK")
 
+        # 5. Quality tab shows accessibility + performance modules (Phase 11)
+        page.click("text=Quality")
+        page.wait_for_selector("text=Accessibility (WCAG)", timeout=5000)
+        page.wait_for_selector("text=Performance (smoke load)", timeout=5000)
+        print("[5] quality tab modules render OK")
+
+        # 6. Reports tab shows generation UI + report history (Phase 12)
+        page.click("text=Reports")
+        page.wait_for_selector("text=Generate report", timeout=5000)
+        page.wait_for_selector("text=Whole project", state="attached", timeout=5000)
+        print("[6] reports tab renders OK")
+
+        # 7. Run page renders (latest run — the matrix gate run)
+        page.click("text=Executions")
+        page.wait_for_selector("text=View live", timeout=10000)
+        page.click("text=View live")
+        page.wait_for_selector("text=Live log", timeout=10000)
+        page.wait_for_timeout(1500)
+        if page.locator("text=Cross-browser matrix").count() > 0:
+            print("[7] run page + cross-browser matrix render OK")
+        else:
+            print("[7] run page renders OK (matrix hidden for runs without data)")
+
         page.screenshot(path="/tmp/autoqa-ui.png", full_page=True)
         print("screenshot: /tmp/autoqa-ui.png")
 

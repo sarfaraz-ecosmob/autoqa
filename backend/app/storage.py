@@ -22,6 +22,12 @@ def _driver() -> str:
 
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+    # Shared artifacts volume is written by multiple non-root users (browser
+    # worker, API, report worker); make dirs writable across them.
+    try:
+        os.chmod(path, 0o777)
+    except OSError:
+        pass  # not our directory — fine if it is already permissive
 
 
 def _fs_path(key: str) -> str:

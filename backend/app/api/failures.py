@@ -64,6 +64,56 @@ def list_defects(
     ]
 
 
+@router.get("/executions/{execution_id}/evidence")
+def execution_evidence(
+    execution_id: str,
+    project: Project = Depends(get_owned_project),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Evidence bundle for a single execution (§12) — screenshot included.
+
+    Used by the run view to attach failure (or pass, if captured) screenshots
+    without running failure analysis first.
+    """
+    row = db.execute(
+        sa.select(TestExecution, TestCase)
+        .join(TestCase, TestCase.id == TestExecution.test_case_id)
+        .where(TestExecution.id == execution_id, TestCase.project_id == project.id)
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    execution, case = row
+
+    details = execution.error_details or {}
+    evidence = details.get("evidence", {}) if isinstance(details.get("evidence", {}), dict) else {}
+    screenshot_key = evidence.get("screenshot")
+
+    screenshot_data = None
+    if screenshot_key:
+        from app import storage
+
+        try:
+            import base64
+
+            screenshot_data = base64.b64encode(storage.get_bytes(screenshot_key)).decode()
+        except Exception:
+            screenshot_data = None
+
+    return {
+        "execution_id": execution.id,
+        "ref": case.ref,
+        "scenario": case.scenario,
+        "status": execution.status.value,
+        "attempt": execution.attempt,
+        "browser": execution.browser,
+        "actual_result": execution.actual_result,
+        "error_details": {k: v for k, v in details.items() if k not in ("log", "evidence")},
+        "step_log": details.get("log", []),
+        "console": evidence.get("console", []),
+        "screenshot_base64": screenshot_data,
+    }
+
+
 @router.get("/defects/{defect_id}/evidence")
 def defect_evidence(
     defect_id: str,

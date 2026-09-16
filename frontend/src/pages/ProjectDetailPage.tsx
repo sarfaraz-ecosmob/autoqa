@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import * as api from "../api/client";
 
 interface Project {
@@ -56,7 +56,7 @@ interface TestCase {
   approved: boolean;
 }
 
-const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions"] as const;
+const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "quality", "reports"] as const;
 type Tab = (typeof TABS)[number];
 
 interface RunRow {
@@ -69,6 +69,38 @@ interface RunRow {
   finished_at: string | null;
 }
 
+interface A11yRow {
+  id: string;
+  page_url: string;
+  violation_count: number;
+  by_severity: Record<string, number>;
+  violations: { rule: string; severity: string; help: string; count: number }[];
+}
+
+interface ReportRow {
+  id: string;
+  format: string;
+  status: string;
+  test_run_id: string | null;
+  meta: { size_bytes?: number; pass_rate?: number; failed?: number; executions?: number };
+  created_at: string;
+}
+
+interface PerfRow {
+  id: string;
+  scenario: string;
+  concurrent_users: number;
+  duration_seconds: number;
+  p50_ms: number;
+  p90_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  throughput_rps: number;
+  error_rate: number;
+  meta: { threshold_breached?: boolean; avg_ms?: number; total_requests?: number };
+  created_at: string;
+}
+
 const PRIORITY_STYLES: Record<string, string> = {
   critical: "bg-red-500/10 text-red-400",
   high: "bg-orange-500/10 text-orange-400",
@@ -78,6 +110,7 @@ const PRIORITY_STYLES: Record<string, string> = {
 
 export default function ProjectDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("overview");
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +132,27 @@ export default function ProjectDetailPage() {
 
   // runs
   const [runs, setRuns] = useState<RunRow[]>([]);
+
+  // quality (a11y + perf)
+  const [a11y, setA11y] = useState<A11yRow[]>([]);
+  const [a11yState, setA11yState] = useState("");
+  const [perf, setPerf] = useState<PerfRow[]>([]);
+  const [perfState, setPerfState] = useState("");
+  const [perfConfig, setPerfConfig] = useState({
+    path: "/",
+    concurrent_users: 2,
+    duration_seconds: 10,
+    requests_per_second: 5,
+    max_response_time_ms: 3000,
+  });
+
+  // reports
+  const [reports, setReports] = useState<ReportRow[]>([]);
+  const [reportState, setReportState] = useState("");
+  const [reportReq, setReportReq] = useState<{ format: string; runId: string }>({
+    format: "pdf",
+    runId: "",
+  });
 
   const load = useCallback(async () => {
     try {
@@ -163,7 +217,7 @@ export default function ProjectDetailPage() {
       });
       await api.post(`/projects/${id}/test-runs/${run.id}/start`);
       await loadRuns();
-      window.location.hash = `#/projects/${id}/runs/${run.id}`;
+      navigate(`/projects/${id}/runs/${run.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Run start failed");
     }
@@ -177,6 +231,14 @@ export default function ProjectDetailPage() {
       if (tab === "test-cases") loadCases();
     }
     if (tab === "executions") loadRuns();
+    if (tab === "quality") {
+      loadA11y();
+      loadPerf();
+    }
+    if (tab === "reports") {
+      loadReports();
+      loadRuns();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -267,6 +329,132 @@ export default function ProjectDetailPage() {
       await loadCases();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Approval failed");
+    }
+  }
+
+  // ---------- Quality (a11y + perf) ----------
+
+  async function loadA11y() {
+    try {
+      setA11y(await api.get<A11yRow[]>(`/projects/${id}/quality/a11y/results`));
+    } catch {
+      setA11y([]);
+    }
+  }
+
+  async function loadPerf() {
+    try {
+      setPerf(await api.get<PerfRow[]>(`/projects/${id}/quality/perf/results`));
+    } catch {
+      setPerf([]);
+    }
+  }
+
+  async function startA11yAudit() {
+    setError(null);
+    setA11yState("starting audit…");
+    try {
+      const res = await api.post<{ audit_id: string }>(`/projects/${id}/quality/a11y/audit`, {});
+      const timer = setInterval(async () => {
+        try {
+          const s = await api.get<{ status: string; result?: { violations?: number; pages_audited?: number } }>(
+            `/projects/${id}/quality/a11y/status?audit_id=${res.audit_id}`,
+          );
+          if (s.status === "SUCCESS") {
+            clearInterval(timer);
+            setA11yState(`completed — ${s.result?.pages_audited ?? "?"} pages, ${s.result?.violations ?? 0} violations`);
+            loadA11y();
+          } else if (s.status === "FAILURE") {
+            clearInterval(timer);
+            setA11yState("audit failed");
+          }
+        } catch {
+          clearInterval(timer);
+          setA11yState("");
+        }
+      }, 2000);
+    } catch (err) {
+      setA11yState("");
+      setError(err instanceof Error ? err.message : "Audit failed to start");
+    }
+  }
+
+  // ---------- Reports (Phase 12) ----------
+
+  async function loadReports() {
+    try {
+      setReports(await api.get<ReportRow[]>(`/projects/${id}/reports`));
+    } catch {
+      setReports([]);
+    }
+  }
+
+  async function generateReport() {
+    setError(null);
+    setReportState("queuing generation…");
+    try {
+      const res = await api.post<{ report_id: string }>(`/projects/${id}/reports`, {
+        format: reportReq.format,
+        test_run_id: reportReq.runId || null,
+      });
+      const timer = setInterval(async () => {
+        try {
+          const s = await api.get<ReportRow>(`/projects/${id}/reports/${res.report_id}`);
+          if (s.status === "completed") {
+            clearInterval(timer);
+            setReportState(`ready — ${(s.meta?.size_bytes ?? 0 / 1024).toFixed(0)} KB`);
+            loadReports();
+          } else if (s.status === "failed") {
+            clearInterval(timer);
+            setReportState("generation failed");
+          }
+        } catch {
+          clearInterval(timer);
+          setReportState("");
+        }
+      }, 1500);
+    } catch (err) {
+      setReportState("");
+      setError(err instanceof Error ? err.message : "Report generation failed");
+    }
+  }
+
+  async function downloadReport(reportId: string) {
+    setError(null);
+    try {
+      await api.download(`/projects/${id}/reports/${reportId}/download`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    }
+  }
+
+  async function startPerfRun() {
+    setError(null);
+    setPerfState("running load test…");
+    try {
+      const res = await api.post<{ perf_id: string }>(`/projects/${id}/quality/perf/run`, perfConfig);
+      const timer = setInterval(async () => {
+        try {
+          const s = await api.get<{ status: string; result?: { p95?: number; threshold_breached?: boolean } }>(
+            `/projects/${id}/quality/perf/status?perf_id=${res.perf_id}`,
+          );
+          if (s.status === "SUCCESS") {
+            clearInterval(timer);
+            const breached = s.result?.threshold_breached ? " — ⚠ threshold breached" : " — within thresholds";
+            setPerfState(`completed (p95 ${s.result?.p95 ?? "?"}ms)${breached}`);
+            loadPerf();
+          } else if (s.status === "FAILURE") {
+            clearInterval(timer);
+            setPerfState("run failed");
+          }
+        } catch {
+          clearInterval(timer);
+          setPerfState("");
+        }
+      }, 2000);
+    } catch (err) {
+      setPerfState("");
+      setError(err instanceof Error ? err.message : "Perf run failed to start");
     }
   }
 
@@ -609,12 +797,12 @@ export default function ProjectDetailPage() {
                       : "bg-slate-800 text-slate-400"}`}>
                       {r.status}
                     </span>
-                    <a
-                      href={`#/projects/${id}/runs/${r.id}`}
+                    <Link
+                      to={`/projects/${id}/runs/${r.id}`}
                       className="text-sm text-brand-400 hover:text-brand-300"
                     >
                       View live →
-                    </a>
+                    </Link>
                   </div>
                 </div>
               ))}
@@ -762,6 +950,260 @@ export default function ProjectDetailPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {/* ---------- Quality (a11y + perf) ---------- */}
+      {tab === "quality" && (
+        <div className="space-y-4">
+          {!project.authorization_confirmed && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+              Authorization must be confirmed before running accessibility or performance modules.
+            </div>
+          )}
+
+          {/* Accessibility */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <div>
+                <h3 className="font-semibold">Accessibility (WCAG)</h3>
+                <p className="text-sm text-slate-500 mt-0.5">Label, alt-text, heading, and ARIA checks on discovered pages</p>
+              </div>
+              <button
+                onClick={startA11yAudit}
+                disabled={!project.authorization_confirmed || a11yState.includes("audit")}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold"
+              >
+                Run accessibility audit
+              </button>
+            </div>
+            {a11yState && (
+              <p className="px-6 py-3 text-sm text-slate-400">
+                {a11yState}
+                {a11yState.includes("audit…") || a11yState.includes("starting") ? (
+                  <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-brand-500" />
+                ) : null}
+              </p>
+            )}
+            {a11y.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-slate-500">No accessibility results yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                    <th className="px-6 py-3">Page</th>
+                    <th className="px-6 py-3">Violations</th>
+                    <th className="px-6 py-3">By severity</th>
+                    <th className="px-6 py-3">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {a11y.map((r) => (
+                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
+                      <td className="px-6 py-3 font-mono text-xs text-slate-200 max-w-72 truncate">{r.page_url}</td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
+                          r.violation_count === 0 ? "bg-emerald-500/10 text-emerald-400"
+                          : "bg-red-500/10 text-red-400"}`}>
+                          {r.violation_count}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-400">
+                        {Object.entries(r.by_severity).map(([sev, n]) => `${sev}:${n}`).join(" · ") || "—"}
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-500 max-w-96">
+                        {r.violations.slice(0, 3).map((v) => `${v.rule} (${v.count})`).join(", ")}
+                        {r.violations.length > 3 ? ` +${r.violations.length - 3} more` : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Performance */}
+          <div className="rounded-xl border border-slate-800 bg-slate-900">
+            <div className="px-6 py-4 border-b border-slate-800">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold">Performance (smoke load)</h3>
+                  <p className="text-sm text-slate-500 mt-0.5">Bounded rate-limited run — production-scale loads are not permitted from the UI</p>
+                </div>
+                <button
+                  onClick={startPerfRun}
+                  disabled={!project.authorization_confirmed || perfState.includes("load test")}
+                  className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold"
+                >
+                  Run load test
+                </button>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-3">
+                {([
+                  ["path", "text", "Path"],
+                  ["concurrent_users", "number", "Users"],
+                  ["duration_seconds", "number", "Duration (s)"],
+                  ["requests_per_second", "number", "RPS"],
+                  ["max_response_time_ms", "number", "Max p95 (ms)"],
+                ] as const).map(([key, type, label]) => (
+                  <label key={key} className="text-xs text-slate-400">
+                    <span className="block mb-1">{label}</span>
+                    <input
+                      type={type}
+                      value={perfConfig[key] as string | number}
+                      onChange={(e) =>
+                        setPerfConfig({
+                          ...perfConfig,
+                          [key]: type === "number" ? Number(e.target.value) : e.target.value,
+                        })
+                      }
+                      className="w-24 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-sm"
+                    />
+                  </label>
+                ))}
+              </div>
+              {perfState && <p className="mt-3 text-sm text-slate-400">{perfState}</p>}
+            </div>
+            {perf.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-slate-500">No performance results yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                    <th className="px-6 py-3">When</th>
+                    <th className="px-6 py-3">Path</th>
+                    <th className="px-6 py-3">Requests</th>
+                    <th className="px-6 py-3">p50 / p95 / p99 (ms)</th>
+                    <th className="px-6 py-3">RPS</th>
+                    <th className="px-6 py-3">Errors</th>
+                    <th className="px-6 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perf.map((r) => (
+                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
+                      <td className="px-6 py-3 text-xs text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-200">{r.scenario}</td>
+                      <td className="px-6 py-3 text-slate-400">{r.meta?.total_requests ?? "—"}</td>
+                      <td className="px-6 py-3 text-slate-300">{r.p50_ms} / {r.p95_ms} / {r.p99_ms}</td>
+                      <td className="px-6 py-3 text-slate-400">{r.throughput_rps}</td>
+                      <td className="px-6 py-3 text-slate-400">{(r.error_rate * 100).toFixed(1)}%</td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${
+                          r.meta?.threshold_breached ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400"}`}>
+                          {r.meta?.threshold_breached ? "breached" : "ok"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+      {/* ---------- Reports (Phase 12) ---------- */}
+      {tab === "reports" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+            <h3 className="font-semibold">Generate report</h3>
+            <p className="text-sm text-slate-500 mt-0.5">
+              CSV · Excel · PDF · HTML (with embedded evidence screenshots) · JSON — includes plan,
+              executions, defects, security, performance, accessibility, and recommendations
+            </p>
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-400">
+                <span className="block mb-1">Format</span>
+                <select
+                  value={reportReq.format}
+                  onChange={(e) => setReportReq({ ...reportReq, format: e.target.value })}
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                >
+                  {["pdf", "html", "xlsx", "csv", "json"].map((f) => (
+                    <option key={f} value={f}>{f.toUpperCase()}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">
+                <span className="block mb-1">Scope</span>
+                <select
+                  value={reportReq.runId}
+                  onChange={(e) => setReportReq({ ...reportReq, runId: e.target.value })}
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm"
+                >
+                  <option value="">Whole project</option>
+                  {runs.map((r) => (
+                    <option key={r.id} value={r.id}>{r.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                onClick={generateReport}
+                disabled={reportState.includes("generation…")}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-5 py-2 text-sm font-semibold"
+              >
+                Generate
+              </button>
+              {reportState && <span className="text-sm text-slate-400">{reportState}</span>}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900">
+            <div className="px-6 py-4 border-b border-slate-800">
+              <h3 className="font-semibold">Reports ({reports.length})</h3>
+            </div>
+            {reports.length === 0 ? (
+              <p className="px-6 py-8 text-sm text-slate-500">No reports generated yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                    <th className="px-6 py-3">Generated</th>
+                    <th className="px-6 py-3">Format</th>
+                    <th className="px-6 py-3">Scope</th>
+                    <th className="px-6 py-3">Executions</th>
+                    <th className="px-6 py-3">Status</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reports.map((r) => (
+                    <tr key={r.id} className="border-b border-slate-800/50 last:border-0">
+                      <td className="px-6 py-3 text-xs text-slate-400">{new Date(r.created_at).toLocaleString()}</td>
+                      <td className="px-6 py-3">
+                        <span className="rounded bg-brand-500/10 px-1.5 py-0.5 text-xs font-mono uppercase text-brand-400">
+                          {r.format}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-400">
+                        {r.test_run_id ? runs.find((x) => x.id === r.test_run_id)?.label ?? "run" : "whole project"}
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-400">
+                        {r.meta?.executions != null ? `${r.meta.executions} (${r.meta.failed ?? 0} failed)` : "—"}
+                      </td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold capitalize ${
+                          r.status === "completed" ? "bg-emerald-500/10 text-emerald-400"
+                          : r.status === "failed" ? "bg-red-500/10 text-red-400"
+                          : "bg-slate-500/10 text-slate-400"}`}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        {r.status === "completed" && (
+                          <button
+                            onClick={() => downloadReport(r.id)}
+                            className="rounded bg-slate-800 px-3 py-1.5 text-xs text-brand-400 hover:bg-slate-700"
+                          >
+                            Download
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       )}
     </div>

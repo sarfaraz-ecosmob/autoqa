@@ -83,6 +83,7 @@ def run_live(
                      "percent": int(done * 100 / total) if total else 0},
         "recent": [
             {
+                "execution_id": ex.id,
                 "ref": case.ref,
                 "status": ex.status.value,
                 "attempt": ex.attempt,

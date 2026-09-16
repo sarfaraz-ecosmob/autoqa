@@ -49,6 +49,17 @@ open http://localhost:8080
 
 Every phase is committed (see `git log`). The `.agents/skills/git-init/SKILL.md` skill initializes git + protective gitignore for any new project.
 
+## Reports (§19)
+
+Generate **CSV, Excel (XLSX), PDF, HTML, JSON** reports per project or per run from the Reports tab (or `POST /api/projects/{id}/reports`). Generation runs as a background job on the `reports` queue; download when status is `completed`. Reports include executive summary, app/environment info, test plan, execution stats, per-case results, defects, security findings, performance and accessibility results, embedded failure screenshots (HTML/PDF), and evidence-grounded recommendations.
+
+## Screenshot evidence (§12)
+
+UI tests capture a screenshot on every failure, and optionally on pass (per-test-case `capture_on_pass`, set during review). Screenshots are written by the browser-worker to a **shared `artifacts` volume**, registered as Artifact rows, and served as base64 through the API:
+
+- Failure evidence viewer: click any execution row on a run page (or open a defect's evidence bundle)
+- These artifacts feed the report generators in Phase 12 (embedded screenshots per §19)
+
 ## Security notes
 
 - No secrets committed: `.env` is gitignored; `.env.example` documents keys.

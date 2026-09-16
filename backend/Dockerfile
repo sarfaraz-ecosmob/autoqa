@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN chown -R autoqa:autoqa /app
 
+# Shared artifact volume (screenshots/traces/reports): writable by the
+# non-root user regardless of which service initializes the named volume.
+RUN mkdir -p /data/artifacts && chmod 777 /data/artifacts
+
 USER autoqa
 
 EXPOSE 8000

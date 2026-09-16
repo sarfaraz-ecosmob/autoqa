@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-browser.txt
 
 COPY . .
 
+# Shared artifact volume: world-writable so both non-root users (pwuser here,
+# autoqa in the API image) can use the same named volume.
+RUN mkdir -p /data/artifacts && chmod 777 /data/artifacts
+
 # Base image already ships a non-root 'pwuser'
 USER pwuser
 

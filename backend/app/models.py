@@ -225,6 +225,7 @@ class TestCase(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(20), default="browser")  # browser | api
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    capture_on_pass: Mapped[bool] = mapped_column(Boolean, default=False)  # screenshot evidence even on PASS (§12/§19)
 
 
 class TestSuite(Base, TimestampMixin):
@@ -317,6 +318,7 @@ class PerformanceResult(Base, TimestampMixin):
     p99_ms: Mapped[float] = mapped_column(Float, default=0)
     throughput_rps: Mapped[float] = mapped_column(Float, default=0)
     error_rate: Mapped[float] = mapped_column(Float, default=0)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # avg latency, threshold_breached, run config (§14)
 
 
 class AccessibilityResult(Base, TimestampMixin):
@@ -326,6 +328,7 @@ class AccessibilityResult(Base, TimestampMixin):
     page_url: Mapped[str] = mapped_column(String(2048), default="")
     violations: Mapped[list] = mapped_column(JSON, default=list)
     wcag_level: Mapped[str] = mapped_column(String(10), default="AA")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # counts by rule/severity, audit summary (§15)
 
 
 class Artifact(Base, TimestampMixin):
@@ -345,6 +348,7 @@ class Report(Base, TimestampMixin):
     format: Mapped[str] = mapped_column(String(10))  # csv | xlsx | pdf | html | json
     storage_key: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # counts, size_bytes, generated scope
 
 
 class AuditLog(Base, TimestampMixin):

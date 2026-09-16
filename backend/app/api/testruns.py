@@ -211,6 +211,7 @@ def start_run(
                     "steps": case.steps,
                     "ref": case.ref,
                     "scenario": case.scenario,
+                    "capture_on_pass": case.capture_on_pass,
                 },
                 "browser": ex.browser,
                 "attempt": 1,

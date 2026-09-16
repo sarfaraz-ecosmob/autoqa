@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import analyze as analyze_routes
 from app.api import auth as auth_routes
 from app.api import projects as project_routes
+from app.api import quality as quality_routes
+from app.api import reports as report_routes
 from app.api import scans as scan_routes
 from app.api import failures as failure_routes
 from app.api import realtime as realtime_routes
@@ -88,6 +90,8 @@ def create_app() -> FastAPI:
     app.include_router(realtime_routes.router)
     app.include_router(failure_routes.router)
     app.include_router(security_routes.router)
+    app.include_router(quality_routes.router)
+    app.include_router(report_routes.router)
 
     return app
 
