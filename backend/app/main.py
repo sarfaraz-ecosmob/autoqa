@@ -100,6 +100,9 @@ def create_app() -> FastAPI:
     app.include_router(settings_routes.router)
     app.include_router(testdata_routes.router)
     app.include_router(tier1_routes.router)
+    from app.api import requirements as requirement_routes
+
+    app.include_router(requirement_routes.router)
 
     return app
 

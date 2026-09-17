@@ -227,24 +227,43 @@ def main() -> int:
         page.locator("text=Test credentials & sign-in").first.scroll_into_view_if_needed()
         shot(page, "01b-credentials")
 
-        # 2. Discovery — run a real scan
+        # 2. Requirements & traceability — paste, generate, load matrix
+        goto("Requirements", "Import requirements")
+        page.fill(
+            "textarea",
+            "REQ-WALK-001: Password reset via email\n"
+            "User can reset password using the registered email. POST /api/reset-password\n\n"
+            "REQ-WALK-002: Order summary on dashboard\n"
+            "Authenticated users see their last 5 orders after login.",
+        )
+        page.click("button:has-text('Import text')")
+        page.wait_for_timeout(1500)
+        # re-generate for any missing coverage (idempotent)
+        page.click("button:has-text('Generate cases for all')")
+        page.wait_for_timeout(2500)
+        shot(page, "02-requirements")
+        page.click("button:has-text('Load matrix')")
+        page.wait_for_timeout(1500)
+        shot(page, "02b-traceability")
+
+        # 3. Discovery — run a real scan
         goto("Discovery", "Start scan")
         page.click("text=Start scan")
         try:
             page.wait_for_selector("text=completed", timeout=120000)
         except Exception:
             pass
-        shot(page, "02-discovery")
+        shot(page, "03-discovery")
 
-        # 3. APIs
+        # 4. APIs
         goto("APIs")
-        shot(page, "03-apis")
+        shot(page, "04-apis")
 
-        # 4. Test plan
+        # 5. Test plan
         goto("Test plan")
-        shot(page, "04-test-plan")
+        shot(page, "05-test-plan")
 
-        # 5. Test cases — approve all
+        # 6. Test cases — approve all
         goto("Test cases")
         try:
             page.wait_for_selector("button:has-text('Approve all')", timeout=8000)
@@ -252,22 +271,26 @@ def main() -> int:
             page.wait_for_timeout(1500)
         except Exception:
             pass
-        shot(page, "05-test-cases")
+        shot(page, "06-test-cases")
 
-        # 6. Executions — start a fresh run, capture live, then final
+        # 7. Test data — moved here to mirror the lifecycle (after cases, before execution)
+        goto("Test data")
+        shot(page, "07-test-data")
+
+        # 8. Executions — start a fresh run, capture live, then final
         goto("Executions", "Start run")
         page.click("text=▶ Start run")
         page.wait_for_url("**/runs/**", timeout=30000)
         page.wait_for_timeout(9000)
-        shot(page, "06-executions-live")
+        shot(page, "08-executions-live")
         page.wait_for_timeout(25000)
-        shot(page, "06b-executions-done")
+        shot(page, "08b-executions-done")
 
         # the run view navigated us off the project page — go back for the rest
         page.goto(f"{BASE}/projects/{pid}", wait_until="networkidle")
         page.wait_for_selector("text=Test cases", timeout=15000)
 
-        # 7. History — compare the two latest runs
+        # 9. History — compare the two latest runs
         goto("History")
         selects = page.locator("select")
         if selects.count() >= 2:
@@ -275,30 +298,26 @@ def main() -> int:
             selects.nth(1).select_option(index=2)
             page.click("button:has-text('Compare')")
             page.wait_for_timeout(2000)
-        shot(page, "07-history")
+        shot(page, "09-history")
 
-        # 8. Quality
+        # 10. Quality
         goto("Quality")
-        shot(page, "08-quality")
+        shot(page, "10-quality")
 
-        # 9. Assistant — ask, wait for the grounded answer
+        # 11. Assistant — ask, wait for the grounded answer
         goto("Assistant", "input[placeholder*='Ask about']")  # placeholder attr, not text
         page.fill("input[placeholder*='Ask about']", "Give me a QA summary of this project")
         page.keyboard.press("Enter")
         page.wait_for_timeout(15000)
-        shot(page, "09-assistant")
+        shot(page, "11-assistant")
 
-        # 10. Test data
-        goto("Test data")
-        shot(page, "10-test-data")
-
-        # 11. Reports
+        # 12. Reports
         goto("Reports")
-        shot(page, "11-reports")
+        shot(page, "12-reports")
 
-        # 12. Automations
+        # 13. Automations
         goto("Automations")
-        shot(page, "12-automations")
+        shot(page, "13-automations")
 
         browser.close()
     print("DONE — copy out with: docker compose cp browser-worker:/tmp/wt ./docs/img")

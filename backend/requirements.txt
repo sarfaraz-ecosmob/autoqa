@@ -20,6 +20,8 @@ boto3>=1.35,<2.0
 # Phase 12: report generation (CSV/HTML/JSON are stdlib)
 openpyxl>=3.1,<4.0
 reportlab>=4.2,<5.0
+pypdf>=4.0,<6.0
+python-docx>=1.1,<2.0
 
 # Tier-1: cron schedules + visual testing image diffing
 croniter>=3.0,<7.0

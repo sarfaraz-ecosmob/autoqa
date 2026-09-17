@@ -49,7 +49,7 @@ Notes for servers:
 
 ## Stage-by-stage guide (project tabs)
 
-Every project walks the same pipeline — each tab below is one stage. Typical flow: **Overview → Discovery → APIs → Test Plan → Test Cases → Executions → History → Quality → Assistant → Test Data → Reports → Automations**. Stages 1–6 are the core loop (URL → tested app); the rest add non-functional depth and continuous operation.
+Every project walks the same pipeline — each tab below is one stage. Typical flow: **Overview → Requirements → Discovery → APIs → Test Plan → Test Cases → Test Data → Executions → History → Quality → Assistant → Reports → Automations**. Stages 1–8 are the core loop (URL → tested requirements); the rest add non-functional depth and continuous operation.
 
 ### 1. Overview — project setup & authorization
 
@@ -63,7 +63,13 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - The **Test credentials & sign-in** card accepts: username/password (+ login URL, form selectors, success assertion), a static API token, or a token endpoint (`POST /login` → JSON path of the token). Saved via `PATCH /api/projects/{id}`; values are Fernet-encrypted at rest, masked (`••••••••`) in every API response, and decrypted only inside the execution path.
 - Everything downstream reads this config: the crawler signs in before scanning, browser cases establish a session before their steps, API cases auto-attach the auth header, and generated cases reference `{{username}}`/`{{password}}` placeholders — never plaintext.
 
-### 2. Discovery — crawl & sitemap
+### 2. Requirements — from documents to test cases (PLAN V2.1)
+
+**Use:** Turn BRDs/user stories/Jira exports into linked, executable test cases and prove coverage.
+
+**How it works:** paste text or upload `.md/.pdf/.docx/.xlsx/.csv/.json` → requirements are parsed (`REQ-xxx` ids honored, duplicates skipped) → one click generates a review-gated scenario set per requirement (main flow, negative, boundary, injection; email flows add expired-link/reuse cases) → the **traceability matrix** shows requirement → cases → latest result → defects with a coverage summary.
+
+### 3. Discovery — crawl & sitemap
 
 **Use:** Map the application — pages, components, forms — the raw material for everything else.
 
@@ -74,7 +80,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - If a login URL is configured, the crawler **signs in first**, so pages behind a portal are discovered too; login success is verified with the configured assertion (`url_not_contains:login`, `text_present:Welcome`, …).
 - Progress streams live per scan; the result is a stored sitemap tree with per-page component counts.
 
-### 3. APIs — backend & architecture discovery
+### 4. APIs — backend & architecture discovery
 
 **Use:** Inventory every backend endpoint the app calls, plus the detected frontend stack.
 
@@ -85,7 +91,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Frontend fingerprinting reports only technologies with real evidence (React, Vue, Next.js, WordPress…).
 - Click **Analyze** to run this stage; the inventory feeds test planning and API test generation.
 
-### 4. Test Plan — AI-generated coverage plan
+### 5. Test Plan — AI-generated coverage plan
 
 **Use:** A structured, prioritized plan (objective, scope, categories) before any cases are written.
 
@@ -94,7 +100,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Discovery context (sitemap + API inventory + architecture) is fed to the LLM, which drafts a plan across all categories with priorities (Critical → Low). With no LLM key configured, a deterministic heuristic plan is generated instead — the stage always produces output.
 - The plan is versioned and editable; **approve** it to lock scope before case generation.
 
-### 5. Test Cases — generation & review gate
+### 6. Test Cases — generation & review gate
 
 **Use:** Turn the plan into concrete, reviewable, executable cases — nothing runs without your approval.
 
@@ -105,47 +111,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - If discovery saw checkout/payment endpoints, payment scenarios are added: successful sandbox payment, **declined card** (`4000000000000002`, asserting a handled 4xx — never 5xx) and **idempotent replay** (same idempotency key must not double-charge). Always use your gateway's sandbox cards.
 - Review actions: approve / reject / edit / disable / approve-all / approve-selected. **Only approved cases execute.**
 
-### 6. Executions — run control & live dashboard
-
-**Use:** Run approved cases (browser + API) and watch results live — no refresh needed.
-
-**How it works:**
-
-- `POST /test-runs` (browser selection, retries, environment, parallelism) → start/pause/resume/stop; runs dispatch to Celery workers with a per-run parallelism cap that tops up as tests finish.
-- **Browser cases:** each execution first establishes the authenticated session (the project's login flow), then runs its steps; a login failure reports `auth_login_failed` instead of a misleading "element not found". Failed selectors self-heal (fallback chain → grounded LLM proposal from the live DOM), recorded in evidence.
-- **API cases:** the `Authorization: Bearer …` header is auto-attached from the token endpoint or static token; validations cover status, body, JSON schema, headers and response time.
-- Live WebSocket counters (Total/Running/Passed/Failed/…), timestamped step logs, per-step timing, and screenshots/traces on failure stored as artifacts.
-
-### 7. History — trends & run comparison
-
-**Use:** Regression intelligence — what changed between runs.
-
-**How it works:**
-
-- Past runs with pass/fail/skip counts; pick any two runs as base + target and compare.
-- The diff shows: new failures, resolved failures, persistent failures, new/removed tests, duration changes and performance (p95) shifts — e.g. "TC-CHECKOUT-002 failed in run #12 but passed in #11".
-
-### 8. Quality — accessibility, performance & security
-
-**Use:** Non-functional depth beyond functional pass/fail.
-
-**How it works:**
-
-- **Accessibility audit:** browser-based audit (labels, alt text, headings, lang, zoom) → violations per page with severity, fed into reports.
-- **Performance:** user-defined VUs/RPS/duration → p50/p90/p95/p99, throughput, error rate; threshold breaches are flagged; guardrails (hard request caps) protect production targets.
-- **Security scan** in three tiers (Passive → Safe Active → Authorized Full, the last requiring explicit re-confirmation), isolated worker, non-destructive payloads; findings carry severity and feed reports.
-
-### 9. Assistant — grounded AI copilot
-
-**Use:** Ask about your project in plain language: "why did tests fail?", "compare the last two runs", "give me a client summary".
-
-**How it works:**
-
-- Intent routing runs **real database queries first**; the answer is composed from actual project data — never invented.
-- If an LLM key is configured (Settings → AI), it may only **rephrase** the verified answer, under a hard ~30s budget with silent fallback — so gateway timeouts can't recur. Works fine with no LLM at all.
-- Answers are marked as grounded; the assistant cannot fabricate numbers.
-
-### 10. Test Data — environments & datasets
+### 7. Test Data — environments & datasets
 
 **Use:** Per-environment data (staging vs UAT), secret datasets and generated data — resolved into `{{placeholders}}` at run time.
 
@@ -156,7 +122,47 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Resolution order: project credentials < environment variables < active datasets — so Test Data can **override** project credentials per environment. Env-scoped datasets only apply to their environment. A resolution preview shows masked values.
 - Secrets are decrypted only inside the execution path — never in logs, API responses or reports.
 
-### 11. Reports — professional deliverables
+### 8. Executions — run control & live dashboard
+
+**Use:** Run approved cases (browser + API) and watch results live — no refresh needed.
+
+**How it works:**
+
+- `POST /test-runs` (browser selection, retries, environment, parallelism) → start/pause/resume/stop; runs dispatch to Celery workers with a per-run parallelism cap that tops up as tests finish.
+- **Browser cases:** each execution first establishes the authenticated session (the project's login flow), then runs its steps; a login failure reports `auth_login_failed` instead of a misleading "element not found". Failed selectors self-heal (fallback chain → grounded LLM proposal from the live DOM), recorded in evidence.
+- **API cases:** the `Authorization: Bearer …` header is auto-attached from the token endpoint or static token; validations cover status, body, JSON schema, headers and response time.
+- Live WebSocket counters (Total/Running/Passed/Failed/…), timestamped step logs, per-step timing, and screenshots/traces on failure stored as artifacts.
+
+### 9. History — trends & run comparison
+
+**Use:** Regression intelligence — what changed between runs.
+
+**How it works:**
+
+- Past runs with pass/fail/skip counts; pick any two runs as base + target and compare.
+- The diff shows: new failures, resolved failures, persistent failures, new/removed tests, duration changes and performance (p95) shifts — e.g. "TC-CHECKOUT-002 failed in run #12 but passed in #11".
+
+### 10. Quality — accessibility, performance & security
+
+**Use:** Non-functional depth beyond functional pass/fail.
+
+**How it works:**
+
+- **Accessibility audit:** browser-based audit (labels, alt text, headings, lang, zoom) → violations per page with severity, fed into reports.
+- **Performance:** user-defined VUs/RPS/duration → p50/p90/p95/p99, throughput, error rate; threshold breaches are flagged; guardrails (hard request caps) protect production targets.
+- **Security scan** in three tiers (Passive → Safe Active → Authorized Full, the last requiring explicit re-confirmation), isolated worker, non-destructive payloads; findings carry severity and feed reports.
+
+### 11. Assistant — grounded AI copilot
+
+**Use:** Ask about your project in plain language: "why did tests fail?", "compare the last two runs", "give me a client summary".
+
+**How it works:**
+
+- Intent routing runs **real database queries first**; the answer is composed from actual project data — never invented.
+- If an LLM key is configured (Settings → AI), it may only **rephrase** the verified answer, under a hard ~30s budget with silent fallback — so gateway timeouts can't recur. Works fine with no LLM at all.
+- Answers are marked as grounded; the assistant cannot fabricate numbers.
+
+### 12. Reports — professional deliverables
 
 **Use:** Share results with stakeholders: **CSV, Excel, PDF, HTML, JSON** per project or per run.
 
@@ -165,7 +171,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Generation is a background job on the `reports` queue; download when the status is `completed`.
 - Content: executive summary, app/environment info, test plan, execution stats, per-case results, defects, security/a11y/perf results, embedded failure screenshots (HTML/PDF) and evidence-grounded recommendations.
 
-### 12. Automations — continuous testing
+### 13. Automations — continuous testing
 
 **Use:** Keep QA running without you: schedules, integrations, stability and visual monitoring.
 
@@ -306,6 +312,27 @@ PATCH /api/projects/{id}
                           "token_path": "token"}
   }
 }
+```
+
+## Requirements & Traceability (PLAN V2.1)
+
+Project → **Requirements** tab: paste requirement text (blank-line or heading separated; `REQ-xxx:` ids optional) or upload **.md / .txt / .pdf / .docx / .xlsx / .csv / .json (Jira export)**. Each requirement generates a review-gated scenario set — main flow, invalid input, missing data, boundary, injection (plus expired-link / link-reuse scenarios for email/reset requirements). API requirements (detected via `POST /path` style text) generate API cases; the rest generate browser cases.
+
+- **Refs**: `REQ-AUTH-001` → `TC-AUTH-001-001…`; re-runs are idempotent (existing refs are skipped, never duplicated).
+- **Review gate**: generated cases are created unapproved — approve them in Test Cases like any other case. Cases are linked via `RequirementLink` rows with coverage kind (`ui|api|negative|boundary|security`).
+- **Traceability matrix**: requirement → cases → latest result per case (PASS/FAIL/blocked/never-run chips) → defect count, with a coverage summary (requirements / covered / uncovered / pass rate). This is the audit artifact enterprise QA teams need: "every requirement has tests, and here's their latest status."
+- **LLM polish (optional)**: with `use_llm: true` and a configured key, scenario titles/data are refined under a hard 30s budget with silent fallback to the deterministic set — the LLM never invents new scenario kinds or credentials.
+
+API:
+
+```bash
+POST /api/projects/{id}/requirements/import        {"text": "REQ-...", "source_name": "brd"}
+POST /api/projects/{id}/requirements/import-file   multipart: file=@brd.md
+POST /api/projects/{id}/requirements/generate-cases {"requirement_ids": [...], "use_llm": false}
+GET  /api/projects/{id}/requirements               # + coverage_count per row
+GET  /api/projects/{id}/requirements/{req_id}      # + linked cases
+PATCH/DELETE /api/projects/{id}/requirements/{req_id}
+GET  /api/projects/{id}/requirements/traceability  # matrix + summary
 ```
 
 ## AI Assistant & Test Data (§22, §17)

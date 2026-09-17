@@ -201,6 +201,9 @@ class Project(Base, TimestampMixin):
     owner = relationship("User")
     pages = relationship("Page", back_populates="project", cascade="all,delete-orphan")
     apis = relationship("ApiEndpoint", back_populates="project", cascade="all,delete-orphan")
+    requirements = relationship(
+        "Requirement", cascade="all,delete-orphan", order_by="Requirement.external_id"
+    )
 
 
 class Environment(Base, TimestampMixin):
@@ -494,3 +497,40 @@ class VisualCheck(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|passed|failed|new
     diff_percent: Mapped[float] = mapped_column(Float, default=0.0)
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ---------- Requirements & Traceability (PLAN V2.1) ----------
+
+class Requirement(Base, TimestampMixin):
+    """A business/product requirement imported from a document or authored manually."""
+    __tablename__ = "requirements"
+    __table_args__ = (Index("ix_req_project_external", "project_id", "external_id", unique=True),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    external_id: Mapped[str] = mapped_column(String(60))  # REQ-AUTH-001
+    source: Mapped[str] = mapped_column(String(20), default="manual")  # manual|document|jira
+    source_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)  # e.g. Jira key
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[Priority] = mapped_column(Enum(Priority), default=Priority.medium)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|approved|verified|blocked
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+
+    links = relationship(
+        "RequirementLink", back_populates="requirement", cascade="all, delete-orphan"
+    )
+
+
+class RequirementLink(Base, TimestampMixin):
+    """Traceability edge: requirement ↔ test case with the coverage kind."""
+    __tablename__ = "requirement_links"
+    __table_args__ = (
+        UniqueConstraint("requirement_id", "test_case_id", name="uq_req_link"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("requirements.id"), index=True)
+    test_case_id: Mapped[str] = mapped_column(ForeignKey("test_cases.id"), index=True)
+    coverage: Mapped[str] = mapped_column(String(20), default="ui")  # ui|api|negative|boundary|security
+
+    requirement = relationship("Requirement", back_populates="links")

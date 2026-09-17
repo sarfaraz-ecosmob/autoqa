@@ -75,7 +75,7 @@ interface TestCase {
   approved: boolean;
 }
 
-const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "history", "quality", "assistant", "test-data", "reports", "automations"] as const;
+const TABS = ["overview", "requirements", "discovery", "apis", "test-plan", "test-cases", "test-data", "executions", "history", "quality", "assistant", "reports", "automations"] as const;
 type Tab = (typeof TABS)[number];
 
 interface RunRow {
@@ -182,6 +182,39 @@ interface ScheduleRow {
   last_run_id: string | null;
   last_run_at: string | null;
   next_run_at: string | null;
+}
+
+interface RequirementRow {
+  id: string;
+  external_id: string;
+  source: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: string;
+  tags: string[];
+  coverage_count?: number;
+}
+
+interface TraceRow {
+  external_id: string;
+  title: string;
+  priority: string;
+  status: string;
+  cases: { ref: string; scenario: string; kind: string; approved: boolean }[];
+  results: string[];
+  defect_count: number;
+}
+
+interface TraceSummary {
+  requirements: number;
+  covered: number;
+  uncovered: number;
+  pass_rate: number | null;
+}
+
+interface RequirementDetail extends RequirementRow {
+  cases: { ref: string; scenario: string; kind: string; approved: boolean; enabled: boolean }[];
 }
 
 interface WebhookRow {
@@ -315,6 +348,14 @@ export default function ProjectDetailPage() {
     valuesText: "",
     envId: "",
   });
+
+  // requirements & traceability (PLAN V2.1)
+  const [requirements, setRequirements] = useState<RequirementRow[]>([]);
+  const [trace, setTrace] = useState<{ rows: TraceRow[]; summary: TraceSummary } | null>(null);
+  const [reqText, setReqText] = useState("");
+  const [reqBusy, setReqBusy] = useState(false);
+  const [reqMsg, setReqMsg] = useState<string | null>(null);
+  const [selectedReqs, setSelectedReqs] = useState<Set<string>>(new Set());
 
   // automations (Tier-1): schedules + webhooks + flaky + visual
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
@@ -500,6 +541,9 @@ export default function ProjectDetailPage() {
       loadWebhooks();
       loadFlaky();
       loadVisualChecks();
+    }
+    if (tab === "requirements") {
+      loadRequirements();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -798,6 +842,93 @@ export default function ProjectDetailPage() {
       ]);
     } finally {
       setChatBusy(false);
+    }
+  }
+
+  // ---------- Requirements & traceability (PLAN V2.1) ----------
+
+  async function loadRequirements() {
+    try {
+      setRequirements(await api.get<RequirementRow[]>(`/projects/${id}/requirements`));
+    } catch {
+      setRequirements([]);
+    }
+  }
+
+  async function loadTrace() {
+    setReqMsg(null);
+    try {
+      setTrace(await api.get(`/projects/${id}/requirements/traceability`));
+    } catch (err) {
+      setReqMsg(err instanceof Error ? err.message : "Traceability load failed");
+    }
+  }
+
+  async function importRequirementText() {
+    if (!reqText.trim()) return;
+    setReqBusy(true);
+    setReqMsg(null);
+    try {
+      const res = await api.post<{ imported: number; skipped: number; skipped_ids: string[] }>(
+        `/projects/${id}/requirements/import`,
+        { text: reqText, source_name: "pasted" },
+      );
+      setReqText("");
+      setReqMsg(`Imported ${res.imported} requirements${res.skipped ? ` — skipped ${res.skipped} duplicates` : ""}.`);
+      await loadRequirements();
+    } catch (err) {
+      setReqMsg(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setReqBusy(false);
+    }
+  }
+
+  async function importRequirementFile(file: File) {
+    setReqBusy(true);
+    setReqMsg(null);
+    try {
+      const res = await api.upload<{ imported: number; skipped: number }>(
+        `/projects/${id}/requirements/import-file`,
+        file,
+      );
+      setReqMsg(`Imported ${res.imported} requirements from ${file.name}.`);
+      await loadRequirements();
+    } catch (err) {
+      setReqMsg(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setReqBusy(false);
+    }
+  }
+
+  async function generateForRequirements(reqIds: string[]) {
+    setReqBusy(true);
+    setReqMsg(null);
+    try {
+      const res = await api.post<{ generated: number; skipped: number; per_requirement: Record<string, { created?: number; skipped?: number; refs?: string[]; error?: string }> }>(
+        `/projects/${id}/requirements/generate-cases`,
+        { requirement_ids: reqIds, use_llm: false },
+      );
+      const errs = Object.entries(res.per_requirement).filter(([, v]) => v.error);
+      setReqMsg(
+        `Generated ${res.generated} test cases${res.skipped ? ` (${res.skipped} already existed)` : ""}` +
+          (errs.length ? ` — errors: ${errs.map(([k]) => k).join(", ")}` : ""),
+      );
+      await loadRequirements();
+    } catch (err) {
+      setReqMsg(err instanceof Error ? err.message : "Generation failed");
+    } finally {
+      setReqBusy(false);
+    }
+  }
+
+  async function deleteRequirement(reqId: string) {
+    setReqMsg(null);
+    try {
+      await api.del(`/projects/${id}/requirements/${reqId}`);
+      await loadRequirements();
+      setTrace(null);
+    } catch (err) {
+      setReqMsg(err instanceof Error ? err.message : "Delete failed");
     }
   }
 
@@ -1265,6 +1396,197 @@ export default function ProjectDetailPage() {
               <li>4. Generate &amp; review test cases (Test Cases tab)</li>
               <li>5. Execute — coming in Phase 6</li>
             </ol>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Requirements & Traceability (PLAN V2.1) ---------- */}
+      {tab === "requirements" && (
+        <div className="space-y-4">
+          {/* Import card */}
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
+            <h3 className="font-semibold">Import requirements</h3>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Paste text (blank-line or heading separated, <code>REQ-xxx:</code> ids optional) or upload
+              .md / .txt / .pdf / .docx / .xlsx / .csv / .json (Jira export). Generated cases enter the
+              normal review gate in Test Cases.
+            </p>
+            <textarea
+              value={reqText}
+              onChange={(e) => setReqText(e.target.value)}
+              rows={5}
+              placeholder={"REQ-AUTH-001: Password reset via email\nUser can reset password using the registered email.\n\nREQ-AUTH-002: Dashboard shows order summary\n…"}
+              className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-mono focus:border-brand-500 focus:outline-none"
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                onClick={importRequirementText}
+                disabled={reqBusy || !reqText.trim()}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+              >
+                {reqBusy ? "Working…" : "Import text"}
+              </button>
+              <label className="cursor-pointer rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50">
+                Upload file…
+                <input
+                  type="file"
+                  accept=".md,.markdown,.txt,.pdf,.docx,.xlsx,.csv,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) importRequirementFile(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              {reqMsg && <span className="text-sm text-slate-600">{reqMsg}</span>}
+            </div>
+          </div>
+
+          {/* Requirements table */}
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Requirements ({requirements.length})</h3>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => generateForRequirements([...selectedReqs])}
+                  disabled={reqBusy || selectedReqs.size === 0}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Generate for selected ({selectedReqs.size})
+                </button>
+                <button
+                  onClick={() => generateForRequirements(requirements.map((r) => r.id))}
+                  disabled={reqBusy || requirements.length === 0}
+                  className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Generate cases for all
+                </button>
+              </div>
+            </div>
+            {requirements.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                No requirements yet — paste a BRD excerpt above or upload a document.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {requirements.map((r) => (
+                  <div key={r.id} className="flex items-center gap-4 px-6 py-3.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedReqs.has(r.id)}
+                      onChange={(e) => {
+                        const next = new Set(selectedReqs);
+                        if (e.target.checked) next.add(r.id);
+                        else next.delete(r.id);
+                        setSelectedReqs(next);
+                      }}
+                      className="h-4 w-4"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-slate-800 truncate">
+                        <span className="font-mono text-xs text-brand-600 mr-2">{r.external_id}</span>
+                        {r.title}
+                      </p>
+                      <p className="text-xs text-slate-500 truncate">{r.description || "—"}</p>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs capitalize ${
+                      r.priority === "critical" ? "bg-red-50 text-red-600"
+                      : r.priority === "high" ? "bg-orange-500/10 text-orange-400"
+                      : r.priority === "medium" ? "bg-yellow-500/10 text-yellow-400"
+                      : "bg-slate-100 text-slate-500"}`}>
+                      {r.priority}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-500">{r.status}</span>
+                    {r.coverage_count ? (
+                      <span className="text-xs text-emerald-600 whitespace-nowrap">✓ {r.coverage_count} cases</span>
+                    ) : (
+                      <span className="text-xs text-amber-600 whitespace-nowrap">no tests</span>
+                    )}
+                    <button
+                      onClick={() => generateForRequirements([r.id])}
+                      disabled={reqBusy}
+                      className="text-sm text-brand-600 hover:text-brand-600 disabled:opacity-50"
+                    >
+                      Generate
+                    </button>
+                    <button
+                      onClick={() => deleteRequirement(r.id)}
+                      className="text-sm text-slate-400 hover:text-red-500"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Traceability matrix */}
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+              <div>
+                <h3 className="font-semibold">Traceability matrix</h3>
+                <p className="text-sm text-slate-500 mt-0.5">Requirement → test cases → latest result → defects</p>
+              </div>
+              <button
+                onClick={loadTrace}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                {trace ? "Refresh" : "Load matrix"}
+              </button>
+            </div>
+            {trace && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 px-6 py-4">
+                  {["Requirements", "Covered", "Uncovered", "Pass rate"].map((label, i) => (
+                    <div key={label} className="rounded-lg bg-slate-50 px-4 py-3">
+                      <p className="text-xs text-slate-500">{label}</p>
+                      <p className="text-lg font-semibold text-slate-800">
+                        {i === 0 ? trace.summary.requirements
+                          : i === 1 ? trace.summary.covered
+                          : i === 2 ? trace.summary.uncovered
+                          : trace.summary.pass_rate === null ? "—"
+                          : `${Math.round(trace.summary.pass_rate * 100)}%`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {trace.rows.map((row) => (
+                    <div key={row.external_id} className="px-6 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-xs text-brand-600">{row.external_id}</span>
+                        <span className="text-sm text-slate-700 truncate flex-1">{row.title}</span>
+                        {row.defect_count > 0 && (
+                          <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-600">
+                            {row.defect_count} defect{row.defect_count > 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {row.cases.map((c, idx) => {
+                          const res = row.results[idx];
+                          return (
+                            <span
+                              key={c.ref}
+                              title={`${c.scenario} — ${res}`}
+                              className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                                res === "passed" ? "bg-emerald-50 text-emerald-600"
+                                : res === "failed" ? "bg-red-50 text-red-600"
+                                : res === "blocked" ? "bg-amber-50 text-amber-600"
+                                : "bg-slate-100 text-slate-500"}`}
+                            >
+                              {c.ref.replace(/^TC-/, "")}{c.approved ? "" : " ·"}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
