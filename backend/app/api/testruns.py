@@ -193,46 +193,56 @@ def start_run(
             TestExecution.test_run_id == run.id, TestExecution.status == TestStatus.queued
         )
     ).scalars().all()
+    _ = executions  # counted inside dispatch_run; kept for the 409 path below
     max_retries = int((run.config or {}).get("max_retries", 0))
 
-    # Test data resolution (§17): environment vars + datasets merged into the
-    # flat variables dict executors substitute into {{placeholders}}.
-    from app.testdata import resolve_variables
-
-    try:
-        variables = resolve_variables(project, (run.config or {}).get("environment_id"))
-    except Exception:
-        variables = {}
-
     dispatched = 0
-    for ex in executions:
-        case = db.execute(
-            sa.select(TestCase).where(TestCase.id == ex.test_case_id)
-        ).scalar_one_or_none()
-        if case is None:
-            continue
-        celery_app.send_task(
-            "app.execute_test",
-            kwargs={
-                "execution_id": ex.id,
-                "test_run_id": run.id,
-                "project_id": project.id,
-                "base_url": project.base_url,
-                "case": {
-                    "kind": case.kind,
-                    "steps": case.steps,
-                    "ref": case.ref,
-                    "scenario": case.scenario,
-                    "capture_on_pass": case.capture_on_pass,
+    try:
+        from app.services.runs import dispatch_run
+
+        dispatched = dispatch_run(project, run, parallelism=None, db=db)
+    except Exception:
+        db.rollback()
+        # Fallback: resolve + dispatch inline (same rules as the service).
+        from app.testdata import resolve_variables
+
+        try:
+            variables = resolve_variables(project, (run.config or {}).get("environment_id"))
+        except Exception:
+            variables = {}
+        executions = db.execute(
+            sa.select(TestExecution).where(
+                TestExecution.test_run_id == run.id, TestExecution.status == TestStatus.queued
+            )
+        ).scalars().all()
+        for ex in executions:
+            case = db.execute(
+                sa.select(TestCase).where(TestCase.id == ex.test_case_id)
+            ).scalar_one_or_none()
+            if case is None:
+                continue
+            celery_app.send_task(
+                "app.execute_test",
+                kwargs={
+                    "execution_id": ex.id,
+                    "test_run_id": run.id,
+                    "project_id": project.id,
+                    "base_url": project.base_url,
+                    "case": {
+                        "kind": case.kind,
+                        "steps": case.steps,
+                        "ref": case.ref,
+                        "scenario": case.scenario,
+                        "capture_on_pass": case.capture_on_pass,
+                    },
+                    "variables": variables,
+                    "browser": ex.browser,
+                    "attempt": 1,
+                    "max_attempts": max_retries + 1,
                 },
-                "variables": variables,
-                "browser": ex.browser,
-                "attempt": 1,
-                "max_attempts": max_retries + 1,
-            },
-            task_id=f"exec-{ex.id}",
-        )
-        dispatched += 1
+                task_id=f"exec-{ex.id}",
+            )
+            dispatched += 1
 
     audit_record("testrun.start", user.id, "test_run", run.id, {"dispatched": dispatched})
     return {"status": "started", "dispatched": dispatched}

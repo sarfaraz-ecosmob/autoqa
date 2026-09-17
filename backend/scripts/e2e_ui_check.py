@@ -67,6 +67,52 @@ def main() -> int:
         page.screenshot(path="/tmp/autoqa-ui.png", full_page=True)
         print("screenshot: /tmp/autoqa-ui.png")
 
+        # 8. Regression (authorization gate): create a project via the UI form
+        #    with the authorization checkbox ticked — it must be immediately
+        #    scannable (badge 'authorized', no amber banner).
+        stamp = __import__("time").strftime("%H%M%S")
+        proj_name = f"E2E AuthGate {stamp}"
+        page.goto(f"{BASE}/", wait_until="networkidle")
+        page.click("text=+ New project")
+        page.fill("input[type=url]", "http://demo-app:9000")
+        page.fill("form input:not([type=url]):not([type=checkbox])", proj_name)
+        page.check("input[type=checkbox]")
+        page.click("button[type=submit]")
+        card = page.locator("a", has_text=proj_name).first
+        card.wait_for(timeout=10000)
+        assert card.locator("text=authorized").count() > 0, (
+            "project created without authorization — checkbox value lost"
+        )
+        print("[8] project created via UI with authorization OK")
+
+        # 9. Open it — Discovery tab must show the scan controls (no banner)
+        card.click()
+        page.wait_for_selector("text=Overview", timeout=10000)
+        page.click("text=Discovery")
+        page.wait_for_selector("text=Start scan", timeout=10000)
+        assert page.locator("text=Authorization must be confirmed").count() == 0, (
+            "amber authorization banner shown for a confirmed project"
+        )
+        print("[9] discovery tab shows scan controls for confirmed project OK")
+
+        # 10. Run a real discovery scan from the UI
+        page.click("text=Start scan")
+        page.wait_for_selector("text=completed", timeout=120000)
+        page.wait_for_selector("text=Discovered pages", timeout=10000)
+        assert "No pages discovered yet" not in page.content(), "scan found no pages"
+        print("[10] discovery scan from UI completed with pages OK")
+
+        # 11. Cleanup: delete the created project
+        page.goto(f"{BASE}/", wait_until="networkidle")
+        page.once("dialog", lambda d: d.accept())
+        page.locator("a", has_text=proj_name).locator("text=Delete").click()
+        page.wait_for_timeout(1000)
+        assert page.locator("a", has_text=proj_name).count() == 0, "cleanup delete failed"
+        print("[11] cleanup delete OK")
+
+        page.screenshot(path="/tmp/autoqa-ui2.png", full_page=True)
+        print("screenshot: /tmp/autoqa-ui2.png")
+
         browser.close()
     print("E2E UI CHECK PASSED")
     return 0

@@ -200,6 +200,19 @@ Derived from `instructions.md` (autonomous QA platform: discovery → analysis �
 - [x] Also: password change, notification center + per-event settings, header bell with unread badge, worker-emitted notifications (run completion, report ready, security scan)
 - [x] **Docker gate:** assistant questions about the seeded demo project returned correct, data-grounded answers (80 executions / 68.8% pass rate from real data); secret masking verified end-to-end; live OpenRouter completion with the user's own key; 14+2 execution run dispatched with `environment_id`
 
+## Tier-1 competitive features (Katalon/BrowserStack gap analysis) ✅
+
+**Goal:** Close the highest-value feature gaps vs Katalon & BrowserStack (feasibility-ranked analysis, 2026-09).
+
+- [x] **Flaky test detection** — instability scoring from execution history (retried-pass, alternating outcomes, pass-rate drift) → stable/suspect/flaky classification with per-case signals, in the Automations tab
+- [x] **Scheduled runs** — cron-driven recurring regressions (croniter-validated), beat tick every minute, "Run now" trigger, per-schedule parallelism, environments & browser selection; runs flow through the same dispatch as manual runs
+- [x] **Webhook notifications** — HMAC-SHA256-signed deliveries (`X-AutoQA-Signature`), Slack-compatible `text` envelope, URLs Fernet-encrypted at rest (masked in API), per-event subscription, test-delivery endpoint, last-status tracking
+- [x] **Test recorder (import)** — Playwright `codegen` output → our step format (goto/fill/click, getByRole/getByTestId/getByLabel/getByText normalization), unsupported actions surfaced as warnings, imported cases enter the review workflow
+- [x] **Visual testing (Percy-style)** — approved baselines per case × browser, Pillow pixel-diff with red-highlight overlay (0.5% threshold), baseline/current/diff artifacts stored, failed check → review → **approve as new baseline** loop, automatic capture & compare on passing runs
+- [x] **Self-healing locators** — fallback chain on failure (testid attr swaps → id → role/name → text → css class), then grounded LLM proposal from a real DOM snapshot (verified live: healed `[data-testid="username-field-broken"]` → `input[name="username"]` @ confidence 0.96); heals recorded in execution evidence (`heals[]`), stored test cases never silently rewritten
+- [x] **Run-level parallelism** — shared dispatch service caps in-flight executions per run; worker tops up as tests finish
+- [x] **Docker gates:** 130 passed / 3 skipped; live per-feature gates — recorder import (TC-REC-017), schedule create+trigger (14-execution run), webhook delivery captured end-to-end (signed payload received), flaky report over real history, visual baseline roundtrip (fail 99.88% → approve → pass 0.0%), healing via LLM (0.96/0.9 confidence)
+
 ## Phase 15 — Production hardening & CI/CD (§29) ← next
 
 **Goal:** Production-ready delivery on Docker Compose.

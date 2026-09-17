@@ -7,10 +7,20 @@ import time
 
 
 class BrowserExecutor:
-    def __init__(self, browser_name: str = "chromium", viewport: dict | None = None, variables: dict | None = None):
+    def __init__(
+        self,
+        browser_name: str = "chromium",
+        viewport: dict | None = None,
+        variables: dict | None = None,
+        heal: bool = True,
+        visual_check: bool = False,
+    ):
         self.browser_name = browser_name
         self.viewport = viewport or {"width": 1280, "height": 720}
         self.variables = dict(variables or {})
+        self.heal = heal
+        self.visual_check = visual_check
+        self.heals: list[dict] = []
 
     def run(self, steps: list[dict], screenshot_key: str | None = None, capture_on_pass: bool = False) -> dict:
         """Execute browser steps; returns {status, actual_result, error_details, log, evidence}.
@@ -46,6 +56,28 @@ class BrowserExecutor:
                     action = step.get("action")
                     entry: dict = {"action": action}
 
+                    def _resolve(selector: str) -> str:
+                        """Substitute variables, then self-heal if needed."""
+                        target = _sub(selector)
+                        if not self.heal:
+                            return target
+                        try:
+                            if page.locator(target).count() > 0:
+                                return target
+                        except Exception:
+                            pass
+                        from app.execution.healing import heal_selector
+
+                        healed, method = heal_selector(page, target)
+                        if healed:
+                            self.heals.append(
+                                {"original": target, "healed": healed, "method": method}
+                            )
+                            entry["healed_from"] = target
+                            entry["healed_to"] = healed
+                            return healed
+                        return target  # let the original failure surface
+
                     if action == "goto":
                         target = _sub(step["target"])
                         resp = page.goto(target, timeout=15000, wait_until="domcontentloaded")
@@ -54,10 +86,10 @@ class BrowserExecutor:
                         entry["status"] = last_response_status
 
                     elif action == "fill":
-                        page.fill(_sub(step["target"]), str(_sub(step.get("value", ""))), timeout=5000)
+                        page.fill(_resolve(step["target"]), str(_sub(step.get("value", ""))), timeout=5000)
 
                     elif action == "click":
-                        page.click(_sub(step["target"]), timeout=5000)
+                        page.click(_resolve(step["target"]), timeout=5000)
                         page.wait_for_timeout(300)  # allow network settle
 
                     elif action == "expect_status":
@@ -106,7 +138,7 @@ class BrowserExecutor:
                 error = {"type": "step_error", "exception": type(exc).__name__, "message": str(exc)}
                 log.append({"action": "exception", "result": "fail", "error": str(exc)[:500]})
             finally:
-                should_capture = bool(screenshot_key) and (bool(error) or capture_on_pass)
+                should_capture = bool(screenshot_key) and (bool(error) or capture_on_pass or self.visual_check)
                 if should_capture:
                     try:
                         shot = page.screenshot(full_page=False)
@@ -130,4 +162,5 @@ class BrowserExecutor:
             "error_details": error,
             "log": log,
             "evidence": evidence,
+            **({"heals": self.heals} if self.heals else {}),
         }

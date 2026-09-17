@@ -165,6 +165,14 @@ services:
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app
+    # Beat runs no HTTP server, so override the image's uvicorn healthcheck:
+    # verify the beat process is alive (pure-Python /proc scan — the slim
+    # image has no pgrep/ps).
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck_beat.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       redis:
         condition: service_healthy

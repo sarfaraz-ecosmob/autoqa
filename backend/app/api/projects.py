@@ -20,6 +20,7 @@ class ProjectIn(BaseModel):
     description: str = Field(default="", max_length=2000)
     auth_type: str | None = None
     credentials: dict | None = None  # encrypted at rest, masked in responses
+    authorization_confirmed: bool = False  # spec §2 step 4: explicit user attestation
 
 
 def _serialize(project: Project) -> dict:
@@ -55,13 +56,20 @@ def create_project(
         description=body.description,
         base_url=body.base_url,
         auth_type=body.auth_type,
+        authorization_confirmed=body.authorization_confirmed,
         settings={},
     )
     if body.credentials:
         project.credentials_encrypted = encrypt_json(body.credentials)
     db.add(project)
     db.commit()
-    audit_record("project.create", user.id, "project", project.id, {"name": body.name})
+    audit_record(
+        "project.create",
+        user.id,
+        "project",
+        project.id,
+        {"name": body.name, "authorization_confirmed": body.authorization_confirmed},
+    )
     return _serialize(project)
 
 

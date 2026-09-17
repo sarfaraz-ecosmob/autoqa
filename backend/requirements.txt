@@ -21,6 +21,10 @@ boto3>=1.35,<2.0
 openpyxl>=3.1,<4.0
 reportlab>=4.2,<5.0
 
+# Tier-1: cron schedules + visual testing image diffing
+croniter>=3.0,<7.0
+Pillow>=10.4,<12.0
+
 # dev / test
 pytest>=8.3,<9.0
 pytest-asyncio>=0.25,<1.0

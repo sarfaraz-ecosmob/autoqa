@@ -10,7 +10,7 @@ celery_app = Celery(
     "autoqa",
     broker=_settings.redis_url,
     backend=_settings.redis_url,
-    include=["app.tasks", "app.worker_tasks", "app.worker_exec", "app.worker_security", "app.worker_quality", "app.worker_reports"],
+    include=["app.tasks", "app.worker_tasks", "app.worker_exec", "app.worker_security", "app.worker_quality", "app.worker_reports", "app.worker_schedules"],
 )
 
 celery_app.conf.update(
@@ -27,9 +27,18 @@ celery_app.conf.update(
         "app.run_a11y_audit": {"queue": "browser"},
         "app.run_perf_test": {"queue": "browser"},
         "app.generate_report": {"queue": "reports"},
+        "app.dispatch_due_schedules": {"queue": "autoqa"},
         "app.*": {"queue": "autoqa"},
     },
 )
+
+# Tier-1: cron scheduler tick (scheduler service runs celery beat)
+celery_app.conf.beat_schedule = {
+    "dispatch-due-schedules": {
+        "task": "app.dispatch_due_schedules",
+        "schedule": 60.0,
+    },
+}
 
 _redis_client: Redis | None = None
 

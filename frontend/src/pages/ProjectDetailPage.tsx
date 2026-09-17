@@ -56,7 +56,7 @@ interface TestCase {
   approved: boolean;
 }
 
-const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "history", "quality", "assistant", "test-data", "reports"] as const;
+const TABS = ["overview", "discovery", "apis", "test-plan", "test-cases", "executions", "history", "quality", "assistant", "test-data", "reports", "automations"] as const;
 type Tab = (typeof TABS)[number];
 
 interface RunRow {
@@ -153,6 +153,48 @@ interface ChatMsg {
   grounded?: boolean;
 }
 
+interface ScheduleRow {
+  id: string;
+  name: string;
+  cron: string;
+  browsers: string[];
+  parallelism: number;
+  is_active: boolean;
+  last_run_id: string | null;
+  last_run_at: string | null;
+  next_run_at: string | null;
+}
+
+interface WebhookRow {
+  id: string;
+  name: string;
+  masked_url: string;
+  events: string[];
+  is_active: boolean;
+  last_status: string;
+  last_delivery_at: string | null;
+}
+
+interface FlakyRow {
+  test_case_id: string;
+  runs_observed: number;
+  pass_rate: number;
+  retried_pass: boolean;
+  alternating: boolean;
+  flaky_score: number;
+  classification: string;
+}
+
+interface VisualCheckRow {
+  id: string;
+  test_case_id: string;
+  execution_id: string;
+  browser: string;
+  status: string;
+  diff_percent: number;
+  created_at: string;
+}
+
 const PRIORITY_STYLES: Record<string, string> = {
   critical: "bg-red-50 text-red-600",
   high: "bg-orange-500/10 text-orange-400",
@@ -236,6 +278,16 @@ export default function ProjectDetailPage() {
     envId: "",
   });
 
+  // automations (Tier-1): schedules + webhooks + flaky + visual
+  const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
+  const [webhooks, setWebhooks] = useState<WebhookRow[]>([]);
+  const [flaky, setFlaky] = useState<FlakyRow[]>([]);
+  const [visualChecks, setVisualChecks] = useState<VisualCheckRow[]>([]);
+  const [schedForm, setSchedForm] = useState({ name: "", cron: "0 2 * * *", browsers: "chromium", parallelism: 2 });
+  const [hookForm, setHookForm] = useState({ name: "", url: "" });
+  const [recorderText, setRecorderText] = useState("");
+  const [recorderMsg, setRecorderMsg] = useState("");
+
   const load = useCallback(async () => {
     try {
       setProject(await api.get<Project>(`/projects/${id}`));
@@ -253,6 +305,16 @@ export default function ProjectDetailPage() {
       setPages(await api.get<PageRow[]>(`/projects/${id}/scan/pages`));
     } catch {
       setPages([]);
+    }
+  }
+
+  async function confirmAuthorization() {
+    setError(null);
+    try {
+      await api.patch(`/projects/${id}/authorization?confirmed=true`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to confirm authorization");
     }
   }
 
@@ -326,6 +388,12 @@ export default function ProjectDetailPage() {
     }
     if (tab === "test-data") {
       loadTestdata();
+    }
+    if (tab === "automations") {
+      loadSchedules();
+      loadWebhooks();
+      loadFlaky();
+      loadVisualChecks();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -627,6 +695,168 @@ export default function ProjectDetailPage() {
     }
   }
 
+  // ---------- Automations (Tier-1) ----------
+
+  async function loadSchedules() {
+    try {
+      setSchedules((await api.get<{ items: ScheduleRow[] }>(`/projects/${id}/schedules`)).items);
+    } catch {
+      setSchedules([]);
+    }
+  }
+
+  async function loadWebhooks() {
+    try {
+      setWebhooks((await api.get<{ items: WebhookRow[] }>(`/projects/${id}/webhooks`)).items);
+    } catch {
+      setWebhooks([]);
+    }
+  }
+
+  async function loadFlaky() {
+    try {
+      setFlaky((await api.get<{ items: FlakyRow[] }>(`/projects/${id}/flaky`)).items);
+    } catch {
+      setFlaky([]);
+    }
+  }
+
+  async function loadVisualChecks() {
+    try {
+      setVisualChecks((await api.get<{ items: VisualCheckRow[] }>(`/projects/${id}/visual/checks`)).items);
+    } catch {
+      setVisualChecks([]);
+    }
+  }
+
+  async function createSchedule() {
+    setError(null);
+    try {
+      await api.post(`/projects/${id}/schedules`, {
+        name: schedForm.name,
+        cron: schedForm.cron,
+        browsers: schedForm.browsers.split(",").map((b) => b.trim()).filter(Boolean),
+        parallelism: Number(schedForm.parallelism),
+      });
+      setSchedForm({ name: "", cron: "0 2 * * *", browsers: "chromium", parallelism: 2 });
+      await loadSchedules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Create schedule failed");
+    }
+  }
+
+  async function toggleSchedule(s: ScheduleRow) {
+    setError(null);
+    try {
+      await api.patch(`/projects/${id}/schedules/${s.id}`, {
+        name: s.name,
+        cron: s.cron,
+        browsers: s.browsers,
+        parallelism: s.parallelism,
+        is_active: !s.is_active,
+      });
+      await loadSchedules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Toggle failed");
+    }
+  }
+
+  async function triggerSchedule(s: ScheduleRow) {
+    setError(null);
+    try {
+      await api.post(`/projects/${id}/schedules/${s.id}/trigger`);
+      await loadSchedules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Trigger failed");
+    }
+  }
+
+  async function deleteSchedule(s: ScheduleRow) {
+    setError(null);
+    try {
+      await api.del(`/projects/${id}/schedules/${s.id}`);
+      await loadSchedules();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  async function createWebhook() {
+    setError(null);
+    try {
+      const res = await api.post<{ secret?: string }>(`/projects/${id}/webhooks`, {
+        name: hookForm.name,
+        url: hookForm.url,
+        events: [],
+      });
+      setHookForm({ name: "", url: "" });
+      setRecorderMsg(
+        res.secret
+          ? `Webhook created. Signing secret (shown once): ${res.secret}`
+          : "Webhook created.",
+      );
+      await loadWebhooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Create webhook failed");
+    }
+  }
+
+  async function testWebhook(w: WebhookRow) {
+    setError(null);
+    try {
+      const res = await api.post<{ ok: boolean; status?: string }>(`/projects/${id}/webhooks/${w.id}/test`);
+      setRecorderMsg(res.ok ? "Test delivery OK ✓" : `Delivery failed: ${res.status ?? "error"}`);
+      await loadWebhooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Test failed");
+    }
+  }
+
+  async function deleteWebhook(w: WebhookRow) {
+    setError(null);
+    try {
+      await api.del(`/projects/${id}/webhooks/${w.id}`);
+      await loadWebhooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  async function importRecording() {
+    setError(null);
+    setRecorderMsg("");
+    const lines = recorderText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#") && !l.startsWith("//"));
+    if (!lines.length) {
+      setError("Paste Playwright codegen output first");
+      return;
+    }
+    try {
+      const res = await api.post<{ ref: string; steps: unknown[]; warnings: string[] }>(
+        `/projects/${id}/recorder/import`,
+        { name: `Recorded ${new Date().toLocaleString()}`, actions: lines.map((line) => ({ line })), approve: false },
+      );
+      setRecorderMsg(
+        `Imported as ${res.ref} with ${res.steps.length} steps${res.warnings.length ? ` — ${res.warnings.length} warning(s)` : ""}. Review it in the Test Cases tab.`,
+      );
+      setRecorderText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    }
+  }
+
+  async function approveVisualCheck(checkId: string) {
+    setError(null);
+    try {
+      await api.post(`/projects/${id}/visual/checks/${checkId}/approve`);
+      await loadVisualChecks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approve failed");
+    }
+  }
+
   // ---------- Reports (Phase 12) ----------
 
   async function loadReports() {
@@ -786,8 +1016,14 @@ export default function ProjectDetailPage() {
         <div className="space-y-4">
           {!project.authorization_confirmed ? (
             <div className="rounded-xl border border-amber-300 bg-amber-50 p-6 text-sm text-amber-900">
-              Authorization must be confirmed before scanning. Edit the project to confirm, or
-              re-create it with the authorization checkbox ticked.
+              Authorization must be confirmed before scanning. Confirm you are authorized to
+              test this application:
+              <button
+                onClick={confirmAuthorization}
+                className="ml-3 rounded-lg bg-amber-600 hover:bg-amber-500 px-4 py-1.5 text-sm font-semibold text-white"
+              >
+                I confirm authorization
+              </button>
             </div>
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
@@ -1885,6 +2121,240 @@ export default function ProjectDetailPage() {
             <p className="mt-3 text-xs text-slate-400">
               Secrets never appear in logs or reports; they are decrypted only at execution time inside the worker.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Automations (Tier-1) ---------- */}
+      {tab === "automations" && (
+        <div className="space-y-4">
+          {/* Schedules */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Scheduled runs ({schedules.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Cron-driven recurring regressions — dispatched automatically</p>
+            </div>
+            {schedules.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No schedules yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Name</th>
+                    <th className="px-6 py-3">Cron</th>
+                    <th className="px-6 py-3">Browsers</th>
+                    <th className="px-6 py-3">Next run</th>
+                    <th className="px-6 py-3">Last run</th>
+                    <th className="px-6 py-3">Status</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {schedules.map((s) => (
+                    <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-medium text-slate-800">{s.name}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-600">{s.cron}</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">{s.browsers.join(", ")}</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">{s.next_run_at ? new Date(s.next_run_at).toLocaleString() : "—"}</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">{s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "never"}</td>
+                      <td className="px-6 py-3">
+                        <button
+                          onClick={() => toggleSchedule(s)}
+                          className={`rounded px-2 py-0.5 text-xs font-semibold ${s.is_active ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}
+                        >
+                          {s.is_active ? "active" : "paused"}
+                        </button>
+                      </td>
+                      <td className="px-6 py-3 text-right space-x-2">
+                        <button onClick={() => triggerSchedule(s)} className="rounded bg-brand-50 px-2.5 py-1 text-xs text-brand-600 hover:bg-brand-500/30">Run now</button>
+                        <button onClick={() => deleteSchedule(s)} className="rounded bg-red-50 px-2.5 py-1 text-xs text-red-600 hover:bg-red-100">Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Name</span>
+                <input value={schedForm.name} onChange={(e) => setSchedForm({ ...schedForm, name: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Cron (UTC)</span>
+                <input value={schedForm.cron} onChange={(e) => setSchedForm({ ...schedForm, cron: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono w-32" />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Browsers</span>
+                <input value={schedForm.browsers} onChange={(e) => setSchedForm({ ...schedForm, browsers: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-40" />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Parallelism</span>
+                <input type="number" min={0} max={16} value={schedForm.parallelism} onChange={(e) => setSchedForm({ ...schedForm, parallelism: Number(e.target.value) })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-20" />
+              </label>
+              <button onClick={createSchedule} disabled={!schedForm.name.trim()} className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white">Add schedule</button>
+            </div>
+          </div>
+
+          {/* Flaky detection */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Flaky tests</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Instability signals from execution history: retried-pass, alternating outcomes, pass-rate drift</p>
+            </div>
+            {flaky.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No execution history yet — run some tests first.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Test case</th>
+                    <th className="px-6 py-3">Runs</th>
+                    <th className="px-6 py-3">Pass rate</th>
+                    <th className="px-6 py-3">Signals</th>
+                    <th className="px-6 py-3">Score</th>
+                    <th className="px-6 py-3">Class</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {flaky.slice(0, 12).map((f) => (
+                    <tr key={f.test_case_id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-mono text-xs text-brand-600">{f.test_case_id.slice(0, 8)}…</td>
+                      <td className="px-6 py-3 text-slate-500">{f.runs_observed}</td>
+                      <td className="px-6 py-3 text-slate-700">{(f.pass_rate * 100).toFixed(0)}%</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">
+                        {[f.retried_pass && "retried-pass", f.alternating && "alternating"].filter(Boolean).join(", ") || "—"}
+                      </td>
+                      <td className="px-6 py-3 font-semibold">{f.flaky_score}</td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${f.classification === "flaky" ? "bg-red-50 text-red-600" : f.classification === "suspect" ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}>
+                          {f.classification}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Visual checks */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Visual checks ({visualChecks.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Pixel-diff of passing-run screenshots vs approved baselines. Approve a changed screenshot to update the baseline.</p>
+            </div>
+            {visualChecks.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No visual checks yet — set a baseline (upload below) and run the case; passing runs are compared automatically.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">When</th>
+                    <th className="px-6 py-3">Case</th>
+                    <th className="px-6 py-3">Browser</th>
+                    <th className="px-6 py-3">Diff</th>
+                    <th className="px-6 py-3">Status</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visualChecks.map((c) => (
+                    <tr key={c.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 text-xs text-slate-500">{new Date(c.created_at).toLocaleString()}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-brand-600">{c.test_case_id.slice(0, 8)}…</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">{c.browser}</td>
+                      <td className="px-6 py-3 text-slate-700">{c.diff_percent.toFixed(2)}%</td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${c.status === "passed" ? "bg-emerald-50 text-emerald-600" : c.status === "failed" ? "bg-red-50 text-red-600" : "bg-slate-100 text-slate-500"}`}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        {c.status === "failed" && (
+                          <button onClick={() => approveVisualCheck(c.id)} className="rounded bg-amber-50 px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-100">
+                            Approve as baseline
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Webhooks */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-200">
+              <h3 className="font-semibold">Webhooks ({webhooks.length})</h3>
+              <p className="text-sm text-slate-500 mt-0.5">Signed (HMAC-SHA256) run-completion notifications to Slack/Teams/generic receivers. URLs encrypted at rest.</p>
+            </div>
+            {webhooks.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-slate-500">No webhooks yet.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="px-6 py-3">Name</th>
+                    <th className="px-6 py-3">URL</th>
+                    <th className="px-6 py-3">Last delivery</th>
+                    <th className="px-6 py-3">Status</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {webhooks.map((w) => (
+                    <tr key={w.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-6 py-3 font-medium text-slate-800">{w.name}</td>
+                      <td className="px-6 py-3 font-mono text-xs text-slate-500 max-w-64 truncate">{w.masked_url || "—"}</td>
+                      <td className="px-6 py-3 text-xs text-slate-500">{w.last_delivery_at ? new Date(w.last_delivery_at).toLocaleString() : "never"}</td>
+                      <td className="px-6 py-3">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${w.last_status === "ok" ? "bg-emerald-50 text-emerald-600" : w.last_status ? "bg-red-50 text-red-600" : "bg-slate-100 text-slate-500"}`}>
+                          {w.last_status || "—"}
+                        </span>
+                      </td>
+                      <td className="px-6 py-3 text-right space-x-2">
+                        <button onClick={() => testWebhook(w)} className="rounded bg-brand-50 px-2.5 py-1 text-xs text-brand-600 hover:bg-brand-500/30">Test</button>
+                        <button onClick={() => deleteWebhook(w)} className="rounded bg-red-50 px-2.5 py-1 text-xs text-red-600 hover:bg-red-100">Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="px-6 py-4 border-t border-slate-200 flex flex-wrap items-end gap-3">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Name</span>
+                <input value={hookForm.name} onChange={(e) => setHookForm({ ...hookForm, name: e.target.value })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">URL</span>
+                <input value={hookForm.url} onChange={(e) => setHookForm({ ...hookForm, url: e.target.value })} placeholder="https://hooks.slack.com/..." className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm w-80 font-mono" />
+              </label>
+              <button onClick={createWebhook} disabled={!hookForm.name.trim() || !hookForm.url.trim()} className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white">Add webhook</button>
+              {recorderMsg && <span className="text-xs text-slate-500 max-w-md truncate">{recorderMsg}</span>}
+            </div>
+          </div>
+
+          {/* Recorder import */}
+          <div className="card p-6">
+            <h3 className="font-semibold">Test recorder — import from Playwright codegen</h3>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Record a flow with <code className="font-mono text-xs bg-slate-100 px-1 rounded">npx playwright codegen &lt;url&gt;</code>, then paste the generated actions here. They become a reviewable test case (goto / fill / click / expects).
+            </p>
+            <textarea
+              value={recorderText}
+              onChange={(e) => setRecorderText(e.target.value)}
+              rows={6}
+              placeholder={"await page.goto('http://demo-app:9000/login');\nawait page.getByLabel('Email').fill('user@example.com');\nawait page.getByRole('button', { name: 'Sign in' }).click();"}
+              className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-mono focus:border-brand-500 focus:outline-none"
+            />
+            <div className="mt-3 flex items-center gap-3">
+              <button onClick={importRecording} disabled={!recorderText.trim()} className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white">
+                Import as test case
+              </button>
+              {recorderMsg && <span className="text-xs text-slate-500">{recorderMsg}</span>}
+            </div>
           </div>
         </div>
       )}

@@ -103,6 +103,50 @@ async def test_project_crud_with_authorization_gate(client):
     assert any(p["id"] == project_id for p in r.json())
 
 
+async def test_project_create_with_authorization_flag(client):
+    """Regression: the UI checkbox value must reach the DB on create (spec §2 step 4).
+
+    Before the fix, ProjectIn dropped authorization_confirmed, so every project
+    was created unconfirmed and scanning stayed locked until a manual PATCH.
+    """
+    tokens = await _register_and_login(client, "p4b@example.com")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    suffix = tokens["access_token"][-6:]
+
+    # Ticking the checkbox at create time → immediately scannable
+    r = await client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": f"AuthAtCreate-{suffix}",
+            "base_url": "https://example.com",
+            "authorization_confirmed": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["authorization_confirmed"] is True
+
+    # Omitting it (or leaving unchecked) → unconfirmed, then confirmable via PATCH
+    r = await client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": f"AuthLater-{suffix}",
+            "base_url": "https://example.com",
+            "authorization_confirmed": False,
+        },
+    )
+    assert r.status_code == 201, r.text
+    project_id = r.json()["id"]
+    assert r.json()["authorization_confirmed"] is False
+
+    r = await client.patch(
+        f"/api/projects/{project_id}/authorization?confirmed=true", headers=headers
+    )
+    assert r.status_code == 200
+    assert r.json()["authorization_confirmed"] is True
+
+
 async def test_project_requires_auth(client):
     r = await client.get("/api/projects")
     assert r.status_code == 401

@@ -1,6 +1,7 @@
 """AutoQA database models (spec §23). UUIDs for externally exposed IDs."""
 import enum
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     JSON,
@@ -426,3 +427,70 @@ class AuditLog(Base, TimestampMixin):
     entity_type: Mapped[str] = mapped_column(String(50), default="")
     entity_id: Mapped[str] = mapped_column(String(36), default="")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ------------------------------------------------------------------ Tier-1
+
+
+class TestSchedule(Base, TimestampMixin):
+    """Recurring run schedule (cron) — Katalon TestOps-style scheduling."""
+    __tablename__ = "test_schedules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    cron: Mapped[str] = mapped_column(String(100))  # "0 2 * * *"
+    browsers: Mapped[list] = mapped_column(JSON, default=list)  # ["chromium"]
+    environment_id: Mapped[str | None] = mapped_column(ForeignKey("test_environments.id"), nullable=True)
+    suite: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    refs: Mapped[list] = mapped_column(JSON, default=list)  # explicit test refs (empty = all approved)
+    max_retries: Mapped[int] = mapped_column(Integer, default=0)
+    parallelism: Mapped[int] = mapped_column(Integer, default=2)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Webhook(Base, TimestampMixin):
+    """Outbound webhook for run/report events (Slack-compatible)."""
+    __tablename__ = "webhooks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url_encrypted: Mapped[str] = mapped_column(Text, default="")  # Fernet-encrypted target URL
+    events: Mapped[list] = mapped_column(JSON, default=list)  # subscribed event kinds
+    secret: Mapped[str] = mapped_column(String(100), default="")  # HMAC signing secret
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_status: Mapped[str] = mapped_column(String(30), default="")  # ok | error: ... | ""
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VisualBaseline(Base, TimestampMixin):
+    """Approved screenshot baseline per test case × browser × viewport — Percy-style."""
+    __tablename__ = "visual_baselines"
+    __table_args__ = (UniqueConstraint("test_case_id", "browser"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    test_case_id: Mapped[str] = mapped_column(ForeignKey("test_cases.id"), index=True)
+    browser: Mapped[str] = mapped_column(String(20), default="chromium")
+    storage_key: Mapped[str] = mapped_column(String(500))
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+
+
+class VisualCheck(Base, TimestampMixin):
+    """One comparison event: execution screenshot vs baseline."""
+    __tablename__ = "visual_checks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    test_case_id: Mapped[str] = mapped_column(ForeignKey("test_cases.id"), index=True)
+    execution_id: Mapped[str] = mapped_column(String(36), index=True)
+    browser: Mapped[str] = mapped_column(String(20), default="chromium")
+    baseline_key: Mapped[str] = mapped_column(String(500), default="")
+    current_key: Mapped[str] = mapped_column(String(500), default="")
+    diff_key: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|passed|failed|new
+    diff_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)

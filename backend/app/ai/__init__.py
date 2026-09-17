@@ -21,6 +21,7 @@ works identically across them. Every call degrades gracefully: on any failure
 the caller's heuristic fallback is used and no exception escapes.
 """
 import json
+import re
 import time
 from typing import Any
 
@@ -314,14 +315,45 @@ def _record_model_failure(model_id: str) -> None:
 
 def generate_json(system: str, user: str, fallback: Any) -> Any:
     """Ask the effective LLM for JSON; return fallback if provider is none
-    or the call fails. Never raises for unconfigured environments."""
+    or the call fails. Never raises for unconfigured environments.
+
+    Tolerates LLMs that wrap JSON in ``` fences or prose: the first
+    {...}/[...] block is extracted before parsing."""
     if _effective_config()["provider"] == "none":
         return fallback
     try:
         raw = _call_chat_completions(system, user)
-        return json.loads(raw)
+        return _loads_lenient(raw)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, LLMError, ValueError):
         return fallback
+
+
+def _loads_lenient(raw: str) -> Any:
+    """json.loads with fence/prose tolerance."""
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[\w-]*\n?", "", text).rstrip("`").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # first balanced {...} or [...] block
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        if start == -1:
+            continue
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == opener:
+                depth += 1
+            elif text[i] == closer:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+    raise ValueError("no JSON object found in LLM response")
 
 
 # ---------- object facade (used by the settings test endpoint) ----------

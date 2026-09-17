@@ -129,6 +129,17 @@ UI tests capture a screenshot on every failure, and optionally on pass (per-test
 - Failure evidence viewer: click any execution row on a run page (or open a defect's evidence bundle)
 - These artifacts feed the report generators in Phase 12 (embedded screenshots per §19)
 
+## Automations (Tier-1)
+
+Project → **Automations** tab:
+
+- **Scheduled runs** — cron-driven regressions (UTC, croniter-validated) with browser selection, environment, parallelism cap, and one-click "Run now". Celery beat dispatches due schedules every minute.
+- **Flaky test detection** — per-case instability score (retried-pass, alternating outcomes, pass-rate drift) → stable / suspect / flaky.
+- **Visual testing** — Percy-style baselines per test case × browser. Passing runs are pixel-diffed automatically (0.5% threshold, red-overlay diff artifact). Failed check → review → "Approve as baseline". Baseline upload via API accepts base64 PNG.
+- **Webhooks** — HMAC-SHA256-signed (`X-AutoQA-Signature: sha256=<hmac>`, `X-AutoQA-Timestamp`) Slack-compatible notifications on run completion. URLs are Fernet-encrypted at rest and only ever shown masked; a signing secret is shown once at creation.
+- **Test recorder import** — paste Playwright `codegen` output; supported actions (goto/fill/click, getByRole/getByTestId/getByLabel/getByText/getByPlaceholder) become a reviewable test case; unsupported lines are listed as warnings.
+- **Self-healing locators** — when a selector fails, fallbacks are tried (data-testid ↔ data-test/data-cy variants → id → role/name → text → css class), then a grounded LLM proposal from the live DOM (must match exactly one element). Heals are recorded in the execution evidence — stored cases are never silently rewritten.
+
 ## AI Assistant & Test Data (§22, §17)
 
 - **AI assistant** (project → Assistant tab): ask in natural language — "why did tests fail?", "which module has the most defects?", "compare the last two runs", "give me a client summary". Every answer is **grounded**: intent routing runs real DB queries and the LLM (if configured) may only rephrase verified data — never invent numbers. Works with `provider=none` (heuristic answers) too.

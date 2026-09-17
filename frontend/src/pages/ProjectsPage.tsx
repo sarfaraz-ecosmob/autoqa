@@ -43,6 +43,7 @@ export default function ProjectsPage() {
         name,
         base_url: baseUrl,
         description,
+        authorization_confirmed: authConfirmed,
       });
       setName("");
       setBaseUrl("");
