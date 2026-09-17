@@ -23,6 +23,7 @@ def _case(
     steps: list[dict],
     expected_result: str,
     kind: str,
+    **extra,
 ) -> dict:
     return {
         "ref": ref,
@@ -36,6 +37,7 @@ def _case(
         "expected_result": expected_result,
         "kind": kind,  # browser | api
         "positive": True,
+        **extra,
     }
 
 
@@ -92,10 +94,14 @@ def generate_cases(
     login_pages = [p for p in pages if "login" in p.get("url", "").lower()]
     if login_pages:
         login_url = login_pages[0]["url"]
-        creds = {"username": "demo_user", "password": "DemoPass123!"} if has_credentials else {
-            "username": "demo_user",
-            "password": "demo_pass",
-        }
+        # §17: credentials are NEVER embedded in stored cases — generated
+        # cases reference the {{username}}/{{password}} placeholders, which
+        # executors resolve from the encrypted project credentials at run time.
+        creds = (
+            {"username": "{{username}}", "password": "{{password}}"}
+            if has_credentials
+            else {"username": "demo_user", "password": "demo_pass"}
+        )
         cases.append(
             _case(
                 refs.next("login"),
@@ -103,7 +109,11 @@ def generate_cases(
                 module="login",
                 category="functional",
                 priority="critical",
-                preconditions="A valid user account exists",
+                preconditions=(
+                    "A valid user account exists and project credentials are configured (Overview → Test credentials)"
+                    if has_credentials
+                    else "A valid user account exists"
+                ),
                 test_data=creds,
                 steps=[
                     {"action": "goto", "target": login_url},
@@ -175,6 +185,87 @@ def generate_cases(
                     {"action": "expect_response_time_under_ms", "value": 3000},
                 ],
                 expected_result=f"{method} {path} returns {expected_status or '2xx'} with a well-formed body within 3s",
+                kind="api",
+            )
+        )
+
+    # --- Payment / checkout flows (spec §6 commerce scenarios) ---
+    # Generated only when discovery saw payment/checkout evidence. Amounts and
+    # card numbers are {{placeholders}}: supply SAFE test values via a dataset
+    # (never production card data). The gateway sandbox decides pass/fail —
+    # AutoQA asserts observable behavior only, it never drives real money.
+    _payment_paths = {
+        a["path"]
+        for a in apis
+        if any(k in a.get("path", "").lower() for k in ("checkout", "payment", "pay", "order", "cart", "billing"))
+    }
+    _payment_pages = [
+        p["url"]
+        for p in pages
+        if any(k in p.get("url", "").lower() for k in ("checkout", "payment", "billing", "cart"))
+    ]
+    if _payment_paths or _payment_pages:
+        cases.append(
+            _case(
+                refs.next("payment"),
+                "Verify a successful checkout completes end-to-end and confirms the order",
+                module="payment",
+                category="integration",
+                priority="critical",
+                preconditions="Payment gateway sandbox credentials configured; test card data supplied via Test Data",
+                test_data={
+                    "card_number": "{{card_number}}",
+                    "card_expiry": "{{card_expiry}}",
+                    "card_cvv": "{{card_cvv}}",
+                    "amount": "{{amount}}",
+                },
+                steps=[
+                    {"action": "request", "method": "POST", "path": sorted(_payment_paths)[0] if _payment_paths else "/api/checkout",
+                     "json": {"card_number": "{{card_number}}", "expiry": "{{card_expiry}}", "cvv": "{{card_cvv}}", "amount": "{{amount}}"}},
+                    {"action": "expect_status_in", "value": [200, 201, 402]},
+                    {"action": "expect_json_contains", "key": "status"},
+                ],
+                expected_result="Gateway accepts the sandbox payment (2xx) and the response contains an order/payment status",
+                kind="api",
+                positive=True,
+            )
+        )
+        cases.append(
+            _neg(
+                refs.next("payment"),
+                "Verify a declined card is handled gracefully without leaking gateway internals",
+                module="payment",
+                category="security",
+                priority="high",
+                preconditions="Payment gateway sandbox configured",
+                test_data={"card_number": "4000000000000002", "amount": "1.00"},  # standard decline test card
+                steps=[
+                    {"action": "request", "method": "POST", "path": sorted(_payment_paths)[0] if _payment_paths else "/api/checkout",
+                     "json": {"card_number": "4000000000000002", "expiry": "12/30", "cvv": "123", "amount": "1.00"}},
+                    {"action": "expect_status_in", "value": [400, 402, 422, 424]},
+                ],
+                expected_result="Declined payment yields a handled 4xx — never HTTP 5xx and no gateway stack traces in the body",
+                kind="api",
+            )
+        )
+        cases.append(
+            _neg(
+                refs.next("payment"),
+                "Verify duplicate checkout submission is idempotent (no double charge)",
+                module="payment",
+                category="functional",
+                priority="high",
+                preconditions="Payment gateway sandbox configured",
+                test_data={"amount": "{{amount}}"},
+                steps=[
+                    {"action": "request", "method": "POST", "path": sorted(_payment_paths)[0] if _payment_paths else "/api/checkout",
+                     "json": {"amount": "{{amount}}", "idempotency_key": "{{uuid}}"}},
+                    {"action": "extract", "path": "id", "var": "first_order", "required": False},
+                    {"action": "request", "method": "POST", "path": sorted(_payment_paths)[0] if _payment_paths else "/api/checkout",
+                     "json": {"amount": "{{amount}}", "idempotency_key": "{{uuid}}"}},
+                    {"action": "expect_status_in", "value": [200, 201, 409]},
+                ],
+                expected_result="Replaying the same idempotency key must not create a second charge (same order or 409) — never a server error",
                 kind="api",
             )
         )

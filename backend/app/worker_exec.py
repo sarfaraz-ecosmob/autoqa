@@ -29,6 +29,8 @@ def execute_test(
     base_url: str,
     case: dict,
     variables: dict | None = None,
+    credentials: dict | None = None,
+    auth: dict | None = None,
     browser: str = "chromium",
     attempt: int = 1,
     max_attempts: int = 1,
@@ -67,10 +69,15 @@ def execute_test(
         resolved_vars = dict(variables or {})
         if case.get("variables"):
             resolved_vars.update(case["variables"])
+        # Auth flow config rides with the project credentials blob; test-case
+        # step values may override selectors via case['auth'].
+        effective_auth = {**(auth or {}), **(case.get("auth") or {})}
         if case.get("kind") == "api":
             from app.execution.api_exec import ApiExecutor
 
-            result = ApiExecutor(base_url, variables=resolved_vars).run(case.get("steps", []))
+            result = ApiExecutor(
+                base_url, variables=resolved_vars, auth=effective_auth, credentials=credentials
+            ).run(case.get("steps", []))
         else:
             from app.execution.browser import BrowserExecutor
 
@@ -94,7 +101,12 @@ def execute_test(
                 )
             except Exception:
                 visual_on = False
-            result = BrowserExecutor(browser_name=browser, variables=resolved_vars).run(
+            result = BrowserExecutor(
+                browser_name=browser,
+                variables=resolved_vars,
+                auth=effective_auth,
+                credentials=credentials,
+            ).run(
                 case.get("steps", []),
                 screenshot_key=shot_key,
                 capture_on_pass=bool(case.get("capture_on_pass", False)) or visual_on,
@@ -119,6 +131,8 @@ def execute_test(
                     "base_url": base_url,
                     "case": case,
                     "variables": resolved_vars,
+                    "credentials": credentials,
+                    "auth": auth,
                     "browser": browser,
                     "attempt": attempt + 1,
                     "max_attempts": max_attempts,

@@ -98,6 +98,22 @@ def decrypt_dataset_values(stored: dict, encrypted_keys: list | None = None) -> 
     return values
 
 
+def decrypt_credentials(blob: str) -> tuple[dict, dict]:
+    """Split the project credentials blob into (values, auth_flow).
+
+    Current format: {"values": {...}, "auth": {...}}. The legacy flat dict
+    ({"username": ..., "password": ...}) is treated as values with no auth
+    flow. Returns ({}, {}) on any decrypt failure — callers proceed
+    unauthenticated instead of crashing.
+    """
+    data = decrypt_json(blob or "")
+    if not data:
+        return {}, {}
+    if isinstance(data.get("values"), dict):
+        return data.get("values") or {}, data.get("auth") or {}
+    return data, {}  # legacy flat format
+
+
 def mask_dataset_values(stored: dict) -> dict:
     """API-safe view: decrypt the sealed blob, then mask secret values."""
     return mask_secrets(decrypt_dataset_values(stored))
@@ -128,7 +144,8 @@ def resolve_variables(
     if own_session:
         db = SessionLocal()
     try:
-        variables: dict = decrypt_json(project.credentials_encrypted or "")
+        credentials_values, _auth = decrypt_credentials(project.credentials_encrypted or "")
+        variables: dict = dict(credentials_values)
 
         env_row = None
         if environment_id:

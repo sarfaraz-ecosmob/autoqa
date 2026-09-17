@@ -45,6 +45,138 @@ Notes for servers:
 - The frontend is built into the image (`tsc && vite build`), so no Node is needed on the server.
 - Firewall note: only port `8080` (UI/API) and optionally `9000` (demo-app) need exposure; everything else is internal.
 
+> **New here?** See **[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md)** — a hands-on tour of all 12 project stages with real screenshots from the demo-app.
+
+## Stage-by-stage guide (project tabs)
+
+Every project walks the same pipeline — each tab below is one stage. Typical flow: **Overview → Discovery → APIs → Test Plan → Test Cases → Executions → History → Quality → Assistant → Test Data → Reports → Automations**. Stages 1–6 are the core loop (URL → tested app); the rest add non-functional depth and continuous operation.
+
+### 1. Overview — project setup & authorization
+
+> 📷 *A screenshot-annotated version of this guide lives in [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).*
+
+**Use:** Configure *what* AutoQA tests and prove you own the target.
+
+**How it works:**
+
+- Create the project with a name + base URL, then confirm the **authorization checkbox** — a legal gate; no scan starts without it.
+- The **Test credentials & sign-in** card accepts: username/password (+ login URL, form selectors, success assertion), a static API token, or a token endpoint (`POST /login` → JSON path of the token). Saved via `PATCH /api/projects/{id}`; values are Fernet-encrypted at rest, masked (`••••••••`) in every API response, and decrypted only inside the execution path.
+- Everything downstream reads this config: the crawler signs in before scanning, browser cases establish a session before their steps, API cases auto-attach the auth header, and generated cases reference `{{username}}`/`{{password}}` placeholders — never plaintext.
+
+### 2. Discovery — crawl & sitemap
+
+**Use:** Map the application — pages, components, forms — the raw material for everything else.
+
+**How it works:**
+
+- A Playwright crawler (in the browser-worker) renders the app like a real user — not link-scraping — and records a component inventory per page (forms, buttons, inputs, modals, tables, search, file upload…).
+- Safety controls: same-origin only, max depth / max URLs, dedupe, timeouts.
+- If a login URL is configured, the crawler **signs in first**, so pages behind a portal are discovered too; login success is verified with the configured assertion (`url_not_contains:login`, `text_present:Welcome`, …).
+- Progress streams live per scan; the result is a stored sitemap tree with per-page component counts.
+
+### 3. APIs — backend & architecture discovery
+
+**Use:** Inventory every backend endpoint the app calls, plus the detected frontend stack.
+
+**How it works:**
+
+- Network interception during the crawl records method/URL/headers/params/response for each API call; an OpenAPI/Swagger import adds anything not observed.
+- Endpoints are **auto-grouped by function** (Auth, User, Product, Order, Payment, Reporting) — so checkout/payment surfaces are easy to spot (they trigger payment-scenario generation later).
+- Frontend fingerprinting reports only technologies with real evidence (React, Vue, Next.js, WordPress…).
+- Click **Analyze** to run this stage; the inventory feeds test planning and API test generation.
+
+### 4. Test Plan — AI-generated coverage plan
+
+**Use:** A structured, prioritized plan (objective, scope, categories) before any cases are written.
+
+**How it works:**
+
+- Discovery context (sitemap + API inventory + architecture) is fed to the LLM, which drafts a plan across all categories with priorities (Critical → Low). With no LLM key configured, a deterministic heuristic plan is generated instead — the stage always produces output.
+- The plan is versioned and editable; **approve** it to lock scope before case generation.
+
+### 5. Test Cases — generation & review gate
+
+**Use:** Turn the plan into concrete, reviewable, executable cases — nothing runs without your approval.
+
+**How it works:**
+
+- One click generates cases with ref IDs (`TC-LOGIN-001`…), module, category, priority, preconditions, steps and expected results — positive **and** negative scenarios.
+- Credentials never appear in stored cases: login steps use `{{username}}`/`{{password}}` placeholders resolved at run time.
+- If discovery saw checkout/payment endpoints, payment scenarios are added: successful sandbox payment, **declined card** (`4000000000000002`, asserting a handled 4xx — never 5xx) and **idempotent replay** (same idempotency key must not double-charge). Always use your gateway's sandbox cards.
+- Review actions: approve / reject / edit / disable / approve-all / approve-selected. **Only approved cases execute.**
+
+### 6. Executions — run control & live dashboard
+
+**Use:** Run approved cases (browser + API) and watch results live — no refresh needed.
+
+**How it works:**
+
+- `POST /test-runs` (browser selection, retries, environment, parallelism) → start/pause/resume/stop; runs dispatch to Celery workers with a per-run parallelism cap that tops up as tests finish.
+- **Browser cases:** each execution first establishes the authenticated session (the project's login flow), then runs its steps; a login failure reports `auth_login_failed` instead of a misleading "element not found". Failed selectors self-heal (fallback chain → grounded LLM proposal from the live DOM), recorded in evidence.
+- **API cases:** the `Authorization: Bearer …` header is auto-attached from the token endpoint or static token; validations cover status, body, JSON schema, headers and response time.
+- Live WebSocket counters (Total/Running/Passed/Failed/…), timestamped step logs, per-step timing, and screenshots/traces on failure stored as artifacts.
+
+### 7. History — trends & run comparison
+
+**Use:** Regression intelligence — what changed between runs.
+
+**How it works:**
+
+- Past runs with pass/fail/skip counts; pick any two runs as base + target and compare.
+- The diff shows: new failures, resolved failures, persistent failures, new/removed tests, duration changes and performance (p95) shifts — e.g. "TC-CHECKOUT-002 failed in run #12 but passed in #11".
+
+### 8. Quality — accessibility, performance & security
+
+**Use:** Non-functional depth beyond functional pass/fail.
+
+**How it works:**
+
+- **Accessibility audit:** browser-based audit (labels, alt text, headings, lang, zoom) → violations per page with severity, fed into reports.
+- **Performance:** user-defined VUs/RPS/duration → p50/p90/p95/p99, throughput, error rate; threshold breaches are flagged; guardrails (hard request caps) protect production targets.
+- **Security scan** in three tiers (Passive → Safe Active → Authorized Full, the last requiring explicit re-confirmation), isolated worker, non-destructive payloads; findings carry severity and feed reports.
+
+### 9. Assistant — grounded AI copilot
+
+**Use:** Ask about your project in plain language: "why did tests fail?", "compare the last two runs", "give me a client summary".
+
+**How it works:**
+
+- Intent routing runs **real database queries first**; the answer is composed from actual project data — never invented.
+- If an LLM key is configured (Settings → AI), it may only **rephrase** the verified answer, under a hard ~30s budget with silent fallback — so gateway timeouts can't recur. Works fine with no LLM at all.
+- Answers are marked as grounded; the assistant cannot fabricate numbers.
+
+### 10. Test Data — environments & datasets
+
+**Use:** Per-environment data (staging vs UAT), secret datasets and generated data — resolved into `{{placeholders}}` at run time.
+
+**How it works:**
+
+- **Environments:** named targets (base URL + variables); runs accept an `environment_id`.
+- **Datasets:** static (secret keys Fernet-encrypted at rest, masked everywhere) or **generated** (deterministic seeded users/emails/uuids/ints).
+- Resolution order: project credentials < environment variables < active datasets — so Test Data can **override** project credentials per environment. Env-scoped datasets only apply to their environment. A resolution preview shows masked values.
+- Secrets are decrypted only inside the execution path — never in logs, API responses or reports.
+
+### 11. Reports — professional deliverables
+
+**Use:** Share results with stakeholders: **CSV, Excel, PDF, HTML, JSON** per project or per run.
+
+**How it works:**
+
+- Generation is a background job on the `reports` queue; download when the status is `completed`.
+- Content: executive summary, app/environment info, test plan, execution stats, per-case results, defects, security/a11y/perf results, embedded failure screenshots (HTML/PDF) and evidence-grounded recommendations.
+
+### 12. Automations — continuous testing
+
+**Use:** Keep QA running without you: schedules, integrations, stability and visual monitoring.
+
+**How it works:**
+
+- **Schedules:** cron-driven regressions (UTC, croniter-validated) with browser selection, environment, parallelism and one-click "Run now"; Celery beat dispatches due schedules every minute.
+- **Webhooks:** HMAC-SHA256-signed (`X-AutoQA-Signature`) Slack-compatible notifications on run completion; URLs Fernet-encrypted at rest.
+- **Flaky detection:** instability score from execution history (retried-pass, alternating outcomes, pass-rate drift) → stable / suspect / flaky classification.
+- **Visual testing:** approved baselines per case × browser, pixel-diff with red-overlay diff artifact (0.5% threshold), failed check → review → approve-as-new-baseline loop.
+- **Recorder import:** paste Playwright `codegen` output → becomes a reviewable test case; **self-healing locators** try fallback chains, then a grounded LLM proposal — heals are recorded in evidence, stored cases are never silently rewritten.
+
 ## Database migrations
 
 Migrations are **automatic**: the backend image's entrypoint runs `alembic upgrade head` on every container start, so `docker compose up -d` on a fresh server produces a fully-migrated schema with zero manual steps. On existing databases the check is a cheap no-op.
@@ -140,9 +272,45 @@ Project → **Automations** tab:
 - **Test recorder import** — paste Playwright `codegen` output; supported actions (goto/fill/click, getByRole/getByTestId/getByLabel/getByText/getByPlaceholder) become a reviewable test case; unsupported lines are listed as warnings.
 - **Self-healing locators** — when a selector fails, fallbacks are tried (data-testid ↔ data-test/data-cy variants → id → role/name → text → css class), then a grounded LLM proposal from the live DOM (must match exactly one element). Heals are recorded in the execution evidence — stored cases are never silently rewritten.
 
+## Authenticated targets (credentials, portals & payment flows)
+
+Many targets sit behind a login or require auth for their APIs. AutoQA handles this with **project credentials + an auth flow**, configured per project (**Project → Overview → Test credentials & sign-in**): a plain login form, a portal, or a token-authenticated SPA — the credentials are Fernet-encrypted at rest, shown masked (`••••••••`) in every API response, substituted at execution time only, and scrubbed from logs, evidence and reports.
+
+**How it flows through the platform:**
+
+1. **You provide credentials** on the project Overview card: username/password (and optionally a login URL + form selectors), or a static API token, or a token endpoint (`POST /api/auth/login` → JSON path of the token). Stored via `PATCH /api/projects/{id}` as `credentials` (values) + `auth` (flow config); legacy flat credentials still decrypt fine.
+2. **Discovery scans sign in first** — with a login URL configured, the crawler performs the login flow before crawling, so pages behind the portal are discovered too. Login success is checked with a configurable assertion (e.g. `url_not_contains:login`, `text_present:Welcome`).
+3. **Generated login tests use `{{placeholders}}`** — `{{username}}`/`{{password}}` resolve at run time from the encrypted credentials. No plaintext secrets in test cases, ever.
+4. **Every test execution signs in before its steps run** (browser cases) — so protected pages, dashboards and multi-step portal flows execute inside an authenticated session. If the login fails, the case fails with `auth_login_failed` (not a misleading "element not found"). Selectors self-heal like normal steps.
+5. **API cases get the auth header auto-attached** — `Authorization: Bearer <token>` from the token endpoint (or your static value) is merged into every request; step-level headers can override per case.
+6. **Per-environment credentials** come from Test Data: variables/datasets (with per-environment scoping and encrypted secrets) merge over project credentials and can override them per environment (staging vs UAT).
+
+**Payment gateways & portals:** when discovery sees checkout/payment endpoints, generation adds payment scenarios: successful sandbox payment, declined card (standard `4000000000000002` decline path, asserting a handled 4xx — never 5xx), and idempotent replay (same idempotency key must not double-charge). Card data is supplied via `{{placeholders}}` from a dataset — **always use your gateway's sandbox/test card numbers, never real card data**; AutoQA drives your app's test environment and asserts observable behavior (status codes, response bodies, no leaked internals), it never touches real money.
+
+API for credential management (also used by the UI):
+
+```bash
+PATCH /api/projects/{id}
+{
+  "credentials": {"username": "qa@corp.com", "password": "..."},
+  "auth": {
+    "login_url": "https://staging.example.com/login",
+    "username_selector": "input[name='email']",
+    "password_selector": "input[type='password']",
+    "submit_selector": "button[type='submit']",
+    "success_assert": "url_not_contains:login",
+    "api_auth_header": "Authorization",
+    "api_auth_prefix": "Bearer ",
+    "api_token_request": {"method": "POST", "path": "/api/auth/login",
+                          "json": {"username": "{{username}}", "password": "{{password}}"},
+                          "token_path": "token"}
+  }
+}
+```
+
 ## AI Assistant & Test Data (§22, §17)
 
-- **AI assistant** (project → Assistant tab): ask in natural language — "why did tests fail?", "which module has the most defects?", "compare the last two runs", "give me a client summary". Every answer is **grounded**: intent routing runs real DB queries and the LLM (if configured) may only rephrase verified data — never invent numbers. Works with `provider=none` (heuristic answers) too.
+- **AI assistant** (project → Assistant tab): ask in natural language — "why did tests fail?", "which module has the most defects?", "compare the last two runs", "give me a client summary". Every answer is **grounded**: intent routing runs real DB queries and the LLM (if configured) may only rephrase verified data — never invent numbers. Works with `provider=none` (heuristic answers) too. The heuristic answer is composed **first** from real data; the LLM only rephrases it under a hard ~30s budget, so slow free models can no longer cause gateway timeouts (nginx proxy window for `/api/` raised to 120s as a safety net).
 - **Test data** (project → Test Data tab): named **environments** (staging/uat with per-env variables), **datasets** — static (secret keys Fernet-encrypted at rest, masked `••••••••` in every API response and the resolution preview) or **generated** (deterministic seeded users/emails/uuids/ints). Runs accept an `environment_id`; active datasets merge over env variables and are substituted into `{{placeholders}}` by the API and browser executors. Env-scoped datasets only apply to their environment; secrets are decrypted only inside the execution path.
 - **Model auto-detection**: with `model=auto`, the best **free** OpenRouter model is picked from the live catalog (chat-capable, modality-filtered, family-ranked, 1-hour cache). Rate-limited/retired models are skipped automatically via the rotation chain.
 

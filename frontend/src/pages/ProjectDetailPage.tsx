@@ -8,6 +8,25 @@ interface Project {
   base_url: string;
   description: string;
   authorization_confirmed: boolean;
+  has_credentials?: boolean;
+  credentials?: Record<string, string>; // masked (••••••••)
+  auth?: Record<string, unknown>; // auth flow config (masked)
+}
+
+// Auth-flow form state (Overview → Test credentials & sign-in)
+interface AuthForm {
+  username: string;
+  password: string;
+  login_url: string;
+  username_selector: string;
+  password_selector: string;
+  submit_selector: string;
+  success_assert: string;
+  api_auth_header: string;
+  api_auth_prefix: string;
+  api_auth_header_value: string;
+  token_path: string;
+  token_endpoint: string;
 }
 
 interface PageRow {
@@ -209,6 +228,25 @@ export default function ProjectDetailPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // credentials & auth flow (Overview card)
+  const emptyAuth: AuthForm = {
+    username: "",
+    password: "",
+    login_url: "",
+    username_selector: "input[name='username']",
+    password_selector: "input[type='password']",
+    submit_selector: "button[type='submit']",
+    success_assert: "url_not_contains:login",
+    api_auth_header: "Authorization",
+    api_auth_prefix: "Bearer ",
+    api_auth_header_value: "",
+    token_path: "token",
+    token_endpoint: "",
+  };
+  const [credForm, setCredForm] = useState<AuthForm>(emptyAuth);
+  const [credBusy, setCredBusy] = useState(false);
+  const [credMsg, setCredMsg] = useState<string | null>(null);
+
   // discovery
   const [pages, setPages] = useState<PageRow[]>([]);
   const [scanState, setScanState] = useState<string>("");
@@ -290,7 +328,9 @@ export default function ProjectDetailPage() {
 
   const load = useCallback(async () => {
     try {
-      setProject(await api.get<Project>(`/projects/${id}`));
+      const p = await api.get<Project>(`/projects/${id}`);
+      setProject(p);
+      applyAuthDefaults(p);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load failed");
     }
@@ -315,6 +355,72 @@ export default function ProjectDetailPage() {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to confirm authorization");
+    }
+  }
+
+  // ---------- Credentials & auth flow (Overview) ----------
+
+  function applyAuthDefaults(p: Project | null) {
+    if (!p) return;
+    const a = (p.auth || {}) as Record<string, string>;
+    const tokReq = (a.api_token_request || {}) as Record<string, string>;
+    setCredForm((f) => ({
+      ...f,
+      login_url: a.login_url || "",
+      username_selector: a.username_selector || f.username_selector,
+      password_selector: a.password_selector || f.password_selector,
+      submit_selector: a.submit_selector || f.submit_selector,
+      success_assert: a.success_assert || f.success_assert,
+      api_auth_header: a.api_auth_header ?? f.api_auth_header,
+      api_auth_prefix: a.api_auth_prefix ?? f.api_auth_prefix,
+      api_auth_header_value: a.api_auth_header_value || "",
+      token_path: tokReq.token_path || f.token_path,
+      token_endpoint: tokReq.path || f.token_endpoint,
+    }));
+  }
+
+  async function saveCredentials(clear = false) {
+    setCredBusy(true);
+    setCredMsg(null);
+    try {
+      const body: Record<string, unknown> = {};
+      if (clear) {
+        body.clear_credentials = true;
+      } else {
+        const values: Record<string, string> = {};
+        if (credForm.username) values.username = credForm.username;
+        if (credForm.password) values.password = credForm.password;
+        if (credForm.api_auth_header_value) values.api_token = credForm.api_auth_header_value;
+        const auth: Record<string, unknown> = {
+          login_url: credForm.login_url || null,
+          username_selector: credForm.username_selector || null,
+          password_selector: credForm.password_selector || null,
+          submit_selector: credForm.submit_selector || null,
+          success_assert: credForm.success_assert || null,
+          api_auth_header: credForm.api_auth_header || "",
+          api_auth_prefix: credForm.api_auth_prefix || "",
+        };
+        if (credForm.api_auth_header_value) auth.api_auth_header_value = credForm.api_auth_header_value;
+        if (credForm.token_endpoint) {
+          auth.api_token_request = {
+            method: "POST",
+            path: credForm.token_endpoint,
+            json: { username: "{{username}}", password: "{{password}}" },
+            token_path: credForm.token_path || "token",
+          };
+        }
+        body.credentials = values;
+        body.auth = auth;
+      }
+      const updated = await api.patch<Project>(`/projects/${id}`, body);
+      setProject(updated);
+      applyAuthDefaults(updated);
+      setCredForm((f) => ({ ...f, username: "", password: "", api_auth_header_value: "" }));
+      setCredMsg(clear ? "Credentials cleared." : "Saved — credentials are encrypted at rest.");
+    } catch (err) {
+      setCredMsg(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setCredBusy(false);
     }
   }
 
@@ -998,6 +1104,158 @@ export default function ProjectDetailPage() {
               {project.description || "No description provided."}
             </p>
           </div>
+
+          {/* ---- Test credentials & sign-in (authenticated targets) ---- */}
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-semibold">Test credentials &amp; sign-in</h3>
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs ${
+                  project.has_credentials
+                    ? "bg-emerald-50 text-emerald-600"
+                    : "bg-slate-100 text-slate-500"
+                }`}
+              >
+                {project.has_credentials ? "configured" : "not configured"}
+              </span>
+            </div>
+            <p className="text-sm text-slate-500 mb-4">
+              Used to sign in before scans/tests and to authenticate API calls. Stored
+              encrypted (Fernet), shown masked, never included in logs or reports.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Username / email</label>
+                <input
+                  value={credForm.username}
+                  onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder={(project.credentials?.username as string) || "qa-bot@yourapp.com"}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+                <input
+                  type="password"
+                  value={credForm.password}
+                  onChange={(e) => setCredForm({ ...credForm, password: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder={project.credentials?.password ? "•••••••• (saved)" : "password"}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Login page URL <span className="text-slate-400">(browser sign-in before scans/tests)</span>
+                </label>
+                <input
+                  value={credForm.login_url}
+                  onChange={(e) => setCredForm({ ...credForm, login_url: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="https://staging.example.com/login"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Username field selector</label>
+                <input
+                  value={credForm.username_selector}
+                  onChange={(e) => setCredForm({ ...credForm, username_selector: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Password field selector</label>
+                <input
+                  value={credForm.password_selector}
+                  onChange={(e) => setCredForm({ ...credForm, password_selector: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Submit selector</label>
+                <input
+                  value={credForm.submit_selector}
+                  onChange={(e) => setCredForm({ ...credForm, submit_selector: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Success check <span className="text-slate-400">(url_not_contains|url_contains|text_present|selector_present: value)</span>
+                </label>
+                <input
+                  value={credForm.success_assert}
+                  onChange={(e) => setCredForm({ ...credForm, success_assert: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="url_not_contains:login"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  API auth header <span className="text-slate-400">(attached to every API test request)</span>
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    value={credForm.api_auth_header}
+                    onChange={(e) => setCredForm({ ...credForm, api_auth_header: e.target.value })}
+                    className="w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    placeholder="Authorization"
+                  />
+                  <input
+                    value={credForm.api_auth_prefix}
+                    onChange={(e) => setCredForm({ ...credForm, api_auth_prefix: e.target.value })}
+                    className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    placeholder="Bearer "
+                  />
+                  <input
+                    value={credForm.api_auth_header_value}
+                    onChange={(e) => setCredForm({ ...credForm, api_auth_header_value: e.target.value })}
+                    className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    placeholder={project.credentials?.api_token ? "•••••••• (saved)" : "paste a static token, or leave empty to fetch via token endpoint"}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Token endpoint <span className="text-slate-400">(POST, JSON body; returns the token)</span>
+                </label>
+                <input
+                  value={credForm.token_endpoint}
+                  onChange={(e) => setCredForm({ ...credForm, token_endpoint: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="/api/auth/login"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Token JSON path</label>
+                <input
+                  value={credForm.token_path}
+                  onChange={(e) => setCredForm({ ...credForm, token_path: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="token"
+                />
+              </div>
+            </div>
+            {credMsg && <p className="mt-3 text-sm text-slate-600">{credMsg}</p>}
+            <div className="mt-4 flex justify-end gap-3">
+              {project.has_credentials && (
+                <button
+                  onClick={() => saveCredentials(true)}
+                  disabled={credBusy}
+                  className="rounded-lg px-4 py-2 text-sm text-red-600 hover:text-red-500 disabled:opacity-50"
+                >
+                  Clear credentials
+                </button>
+              )}
+              <button
+                onClick={() => saveCredentials(false)}
+                disabled={credBusy || (!credForm.username && !credForm.password && !credForm.api_auth_header_value && !credForm.login_url)}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-5 py-2 text-sm font-semibold"
+              >
+                {credBusy ? "Saving…" : "Save credentials"}
+              </button>
+            </div>
+          </div>
+
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
             <h3 className="font-semibold mb-3">Pipeline</h3>
             <ol className="space-y-2 text-sm text-slate-500">

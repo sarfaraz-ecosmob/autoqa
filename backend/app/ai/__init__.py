@@ -22,6 +22,7 @@ the caller's heuristic fallback is used and no exception escapes.
 """
 import json
 import re
+import threading
 import time
 from typing import Any
 
@@ -268,6 +269,10 @@ def _call_chat_completions(system: str, user: str) -> str:
 
     # Free-tier models are individually rate-limited: try each candidate in
     # rank order and rotate on rate-limit (429) or provider overflow errors.
+    # Budget cap: sync HTTP endpoints (the assistant) sit behind nginx's
+    # proxy timeout, so total spend across candidate models must stay under
+    # it — cap each attempt at ~1/2.5 of the budget so 2 attempts fit.
+    per_call_timeout = max(10.0, min(float(settings.llm_timeout_seconds), 40.0) / 2.5)
     last_error: Exception | None = None
     for model in candidates:
         try:
@@ -282,7 +287,7 @@ def _call_chat_completions(system: str, user: str) -> str:
                     ],
                     "temperature": 0.2,
                 },
-                timeout=settings.llm_timeout_seconds,
+                timeout=per_call_timeout,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -301,6 +306,13 @@ def _call_chat_completions(system: str, user: str) -> str:
             last_error = exc
             continue
     raise LLMError(f"all candidate models failed: {str(last_error)[:200]}")
+
+
+def _assistant_llm_budget_seconds() -> float:
+    """Total LLM wall-clock budget for one synchronous assistant request.
+    Free OpenRouter models can hang; the heuristic draft answer is already
+    good, so the LLM is an enhancement with a strict deadline."""
+    return 30.0
 
 
 def _record_model_failure(model_id: str) -> None:
@@ -326,6 +338,34 @@ def generate_json(system: str, user: str, fallback: Any) -> Any:
         return _loads_lenient(raw)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, LLMError, ValueError):
         return fallback
+
+
+def generate_json_budgeted(system: str, user: str, fallback: Any, budget_seconds: float) -> Any:
+    """generate_json with a hard wall-clock budget — for synchronous HTTP
+    endpoints (assistant §22) that must answer inside the edge proxy timeout.
+
+    Runs the LLM attempt in a worker thread; on timeout/any error the caller's
+    fallback is returned immediately. The heuristic answer ships either way,
+    so the user never sees a gateway timeout.
+    """
+    if _effective_config()["provider"] == "none":
+        return fallback
+    result: dict = {"value": fallback}
+    done = threading.Event()
+
+    def _worker():
+        try:
+            result["value"] = generate_json(system, user, fallback)
+        except Exception:  # noqa: BLE001 — never escape the thread
+            result["value"] = fallback
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    if not done.wait(timeout=budget_seconds):
+        return fallback  # deadline hit — heuristic draft is already good
+    return result["value"]
 
 
 def _loads_lenient(raw: str) -> Any:

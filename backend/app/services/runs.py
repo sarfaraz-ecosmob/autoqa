@@ -48,6 +48,20 @@ def dispatch_run(project: Project, run: TestRun, parallelism: int | None = None,
         except Exception:
             variables = {}
 
+        # Authenticated-target support: project credentials (decrypted only
+        # here, inside the execution path) + the project's auth flow config.
+        credentials: dict = {}
+        auth: dict = {}
+        if project.credentials_encrypted:
+            try:
+                from app.security.crypto import decrypt_json
+
+                blob = decrypt_json(project.credentials_encrypted)
+                credentials = blob.get("values", {}) or {}
+                auth = blob.get("auth", {}) or {}
+            except Exception:
+                credentials, auth = {}, {}
+
         dispatched = 0
         for ex in batch:
             case = db.execute(
@@ -70,6 +84,8 @@ def dispatch_run(project: Project, run: TestRun, parallelism: int | None = None,
                         "capture_on_pass": case.capture_on_pass,
                     },
                     "variables": variables,
+                    "credentials": credentials,
+                    "auth": auth,
                     "browser": ex.browser,
                     "attempt": 1,
                     "max_attempts": max_retries + 1,

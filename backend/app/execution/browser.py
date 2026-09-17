@@ -2,7 +2,12 @@
 
 Runs inside the browser-worker image (ships Playwright). Collects console
 messages and captures a screenshot on failure (evidence, spec §12).
+
+Authenticated portals: when the project defines a login flow + credentials,
+a real session login runs first; the case's steps then execute inside the
+authenticated context. Credential values are scrubbed from all evidence.
 """
+import json
 import time
 
 
@@ -14,12 +19,18 @@ class BrowserExecutor:
         variables: dict | None = None,
         heal: bool = True,
         visual_check: bool = False,
+        auth: dict | None = None,
+        credentials: dict | None = None,
     ):
         self.browser_name = browser_name
         self.viewport = viewport or {"width": 1280, "height": 720}
         self.variables = dict(variables or {})
         self.heal = heal
         self.visual_check = visual_check
+        # Authenticated-portal support (spec §9): sign in before the case's
+        # own steps run, so protected pages behave like any other target.
+        self.auth: dict = auth or {}
+        self.credentials: dict = credentials or {}
         self.heals: list[dict] = []
 
     def run(self, steps: list[dict], screenshot_key: str | None = None, capture_on_pass: bool = False) -> dict:
@@ -51,7 +62,22 @@ class BrowserExecutor:
                 lambda msg: console_messages.append(f"{msg.type}: {msg.text}"),
             )
 
+            # ---- Session login (project auth flow) BEFORE the case steps ----
+            auth_ok: bool | None = None
+            if self.auth.get("login_url") and self.credentials:
+                from app.execution.auth_flow import browser_login
+
+                auth_ok = browser_login(page, self.auth, self.credentials, self.variables, log)
+                if not auth_ok:
+                    error = {
+                        "type": "auth_login_failed",
+                        "message": "Project login flow failed before the test steps ran",
+                    }
+                    log.append({"action": "auth_gate", "result": "fail"})
+
             try:
+                if auth_ok is False:
+                    raise RuntimeError("auth gate: login failed")
                 for step in steps:
                     action = step.get("action")
                     entry: dict = {"action": action}
@@ -109,6 +135,22 @@ class BrowserExecutor:
                         if not ok:
                             error = {"type": "empty_title"}
 
+                    elif action == "expect_text":
+                        needle = str(_sub(step.get("value", "")))
+                        ok = page.get_by_text(needle).count() > 0
+                        entry["result"] = "pass" if ok else "fail"
+                        entry["expected_text"] = needle[:100]
+                        if not ok:
+                            error = {"type": "text_missing", "expected": needle[:200]}
+
+                    elif action == "expect_url_contains":
+                        needle = str(_sub(step.get("value", ""))).lower()
+                        ok = needle in page.url.lower()
+                        entry["result"] = "pass" if ok else "fail"
+                        entry["expected_url"] = needle[:100]
+                        if not ok:
+                            error = {"type": "url_mismatch", "expected": needle[:200], "actual": page.url[:200]}
+
                     elif action == "expect_no_server_error":
                         # Failure = any network response >= 500 observed so far,
                         # or a visible "Internal Server Error" text.
@@ -152,6 +194,15 @@ class BrowserExecutor:
 
         if error:
             evidence["console"] = console_messages[-20:]
+        if self.credentials:
+            # Never let credential material into evidence/logs (spec §17)
+            from app.security.crypto import redact_text
+
+            blob = json.dumps(evidence)
+            for v in self.credentials.values():
+                if isinstance(v, str) and v:
+                    blob = blob.replace(json.dumps(v)[1:-1], "••••••••").replace(v, "••••••••")
+            evidence = json.loads(blob)
         return {
             "status": "passed" if not error else "failed",
             "actual_result": (

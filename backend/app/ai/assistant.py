@@ -8,7 +8,6 @@ returned, so the feature works offline.
 """
 import sqlalchemy as sa
 
-from app.ai import generate_json
 from app.analysis.compare import compare_runs
 from app.db import SessionLocal
 from app.models import (
@@ -255,8 +254,13 @@ def answer_question(project_id: str, question: str) -> dict:
         project = db.execute(sa.select(Project).where(Project.id == project_id)).scalar_one_or_none()
         answer = _compose(intent, data, project.name if project else "project")
 
-        # Optional LLM rephrasing — grounded data only, never new facts
-        llm = generate_json(
+        # Optional LLM rephrasing — grounded data only, never new facts.
+        # Budget-capped: the heuristic draft above is already correct, so a
+        # slow/hung free model must never turn into a gateway timeout (the
+        # sync endpoint sits behind nginx's proxy_read_timeout).
+        from app.ai import _assistant_llm_budget_seconds, generate_json_budgeted
+
+        llm = generate_json_budgeted(
             system=(
                 "You are a QA assistant. You are given verified data from the QA database "
                 "and a draft answer. Rephrase the draft concisely for the user's question. "
@@ -265,6 +269,7 @@ def answer_question(project_id: str, question: str) -> dict:
             ),
             user=f"question: {question}\nverified data: {data}\ndraft: {answer}",
             fallback={},
+            budget_seconds=_assistant_llm_budget_seconds(),
         )
         if isinstance(llm, dict) and llm.get("answer"):
             answer = llm["answer"]

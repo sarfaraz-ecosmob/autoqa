@@ -44,7 +44,21 @@ def run_scan(self, scan_id: str, progress_channel: str, project_id: str, base_ur
 
         import asyncio
 
-        crawler = Crawler(CrawlControls(**controls))
+        # Authenticated discovery: decrypt credentials only inside the worker
+        # execution path and hand the auth flow to the crawler.
+        credentials: dict = {}
+        auth: dict = {}
+        if project.credentials_encrypted:
+            try:
+                from app.security.crypto import decrypt_json
+
+                blob = decrypt_json(project.credentials_encrypted)
+                credentials = blob.get("values", {}) or {}
+                auth = blob.get("auth", {}) or {}
+            except Exception:
+                credentials, auth = {}, {}
+
+        crawler = Crawler(CrawlControls(**controls), auth=auth, credentials=credentials)
         # Crawler is async; the Celery task is sync — drive a fresh loop.
         result = asyncio.run(crawler.crawl(base_url, progress_cb=on_progress))
 

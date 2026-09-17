@@ -53,18 +53,37 @@ class ApiExecutor:
         base_url: str,
         variables: dict | None = None,
         timeout_seconds: float = 30.0,
+        auth: dict | None = None,
+        credentials: dict | None = None,
     ):
         self.base_url = validate_target_url(base_url).rstrip("/")
         self.variables: dict = dict(variables or {})
         self.timeout_seconds = timeout_seconds
+        # Authenticated-API support (spec §9): when the project has credentials
+        # + auth config, every request gets the auth headers auto-attached.
+        self.auth: dict = auth or {}
+        self.credentials: dict = credentials or {}
+        self.auth_headers: dict = {}
+        self._log: list[dict] = []
 
     def run(self, steps: list[dict]) -> dict:
         """Execute API steps; returns {status, actual_result, error_details, log}."""
         log: list[dict] = []
         last_status: int | None = None
         last_body: Any = None
+        last_headers: dict = {}
         last_ms: int | None = None
         error: dict = {}
+
+        if self.auth and self.credentials:
+            from app.execution.auth_flow import resolve_api_auth_headers
+
+            self.auth_headers = resolve_api_auth_headers(
+                self.auth, self.credentials, self.variables, self.base_url, log
+            )
+            guard = self._unauthenticated_guard(steps)
+            if guard:
+                log.extend(guard)
 
         with httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds) as client:
             for step in steps:
@@ -76,6 +95,8 @@ class ApiExecutor:
                     path = substitute_vars(step.get("path", "/"), self.variables)
                     payload = substitute_vars(step.get("json") or step.get("body"), self.variables)
                     headers = substitute_vars(step.get("headers"), self.variables)
+                    # Auto-attach auth headers (step-level headers win)
+                    merged_headers = {**(self.auth_headers or {}), **(headers or {})}
                     start = time.perf_counter()
                     try:
                         resp = client.request(
@@ -83,7 +104,7 @@ class ApiExecutor:
                             path,
                             json=payload if isinstance(payload, dict) else None,
                             content=payload if isinstance(payload, str) else None,
-                            headers=headers or None,
+                            headers=merged_headers or None,
                         )
                     except httpx.HTTPError as exc:
                         log.append({**entry, "result": "error", "error": str(exc)})
@@ -96,6 +117,7 @@ class ApiExecutor:
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
                     last_status = resp.status_code
                     last_ms = elapsed_ms
+                    last_headers = dict(resp.headers)
                     try:
                         last_body = resp.json()
                     except ValueError:
@@ -124,6 +146,31 @@ class ApiExecutor:
                     if not ok:
                         error = {"type": "status_mismatch", "expected": expected,
                                  "actual": last_status, "body": last_body}
+
+                elif action == "expect_status_in":
+                    allowed = step.get("value") or []
+                    if isinstance(allowed, str):
+                        allowed = [p.strip() for p in allowed.split(",") if p.strip()]
+                    ok = last_status is not None and str(last_status) in {str(v) for v in allowed}
+                    entry["result"] = "pass" if ok else "fail"
+                    entry["expected"] = allowed
+                    entry["actual"] = last_status
+                    log.append(entry)
+                    if not ok and not error:
+                        error = {"type": "status_mismatch", "expected": allowed,
+                                 "actual": last_status, "body": last_body}
+
+                elif action == "expect_header_contains":
+                    header = str(step.get("header", "")).lower()
+                    needle = str(step.get("value", ""))
+                    actual = str(last_headers.get(header, ""))
+                    ok = needle.lower() in actual.lower()
+                    entry["result"] = "pass" if ok else "fail"
+                    entry["header"] = header
+                    log.append(entry)
+                    if not ok and not error:
+                        error = {"type": "header_mismatch", "header": header,
+                                 "expected": needle, "actual": actual}
 
                 elif action == "expect_response_time_under_ms":
                     limit = int(step.get("value", 3000))
@@ -172,6 +219,17 @@ class ApiExecutor:
             "log": log,
             "latency_ms": last_ms,
         }
+
+    def _unauthenticated_guard(self, steps: list[dict]) -> list[dict] | None:
+        """Warn (in the log) when the project has credentials but this API case
+        runs without the auth headers — helps diagnose auth regressions."""
+        if self.auth and self.credentials and not self.auth_headers:
+            return [{
+                "action": "auth_guard",
+                "result": "warn",
+                "note": "credentials configured but no auth headers resolved — requests run unauthenticated",
+            }]
+        return None
 
     @staticmethod
     def _status_matches(actual: int | None, expected: Any) -> bool:
