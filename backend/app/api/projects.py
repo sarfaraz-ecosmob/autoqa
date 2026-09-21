@@ -7,7 +7,35 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_owned_project
 from app.audit import record as audit_record
 from app.db import get_db
-from app.models import Project, Role, User
+from app.models import (
+    AccessibilityResult,
+    ApiEndpoint,
+    Application,
+    Component,
+    Defect,
+    Environment,
+    Notification,
+    Page,
+    PerformanceResult,
+    Project,
+    Report,
+    Requirement,
+    RequirementLink,
+    Role,
+    SecurityFinding,
+    TestCase,
+    TestDataset,
+    TestEnvironment,
+    TestExecution,
+    TestPlan,
+    TestRun,
+    TestSchedule,
+    TestSuite,
+    User,
+    VisualBaseline,
+    VisualCheck,
+    Webhook,
+)
 from app.security.crypto import decrypt_json, encrypt_json, mask_secrets
 from app.security.ssrf import validate_target_url
 
@@ -170,12 +198,68 @@ def confirm_authorization(
     return _serialize(project)
 
 
+# Tables referencing projects.id without an ON DELETE CASCADE in the DB
+# schema and without an ORM relationship cascade. `db.delete(project)` only
+# removes the three related collections (pages/apis/requirements) and then
+# fails with a ForeignKeyViolation as soon as any other child row exists
+# (e.g. an `applications` row after the first analysis run). Child rows are
+# therefore deleted explicitly, children-first, before the project itself.
+# Tables referencing projects.id without an ON DELETE CASCADE in the DB
+# schema and mostly without an ORM relationship cascade. `db.delete(project)`
+# only removes the three related collections (pages/apis/requirements) and then
+# fails with a ForeignKeyViolation as soon as any other child row exists
+# (e.g. an `applications` row after the first analysis run). Child rows are
+# therefore deleted explicitly, children before parents.
+_PROJECT_CHILD_ORDER = (
+    TestRun,                # after executions
+    TestSchedule,           # → test_environments
+    TestDataset,            # → test_environments
+    TestEnvironment,
+    RequirementLink,        # → requirements, test_cases
+    TestCase,               # → test_plans
+    TestPlan,               # after cases
+    TestSuite,              # after runs
+    Component,              # → pages
+    Page,
+    ApiEndpoint,
+    Requirement,            # after links
+    # independent project children
+    Report,
+    PerformanceResult,
+    AccessibilityResult,
+    SecurityFinding,
+    Environment,
+    Application,
+    Webhook,
+)
+
+
+def _delete_project_cascade(db: Session, project_id: str) -> None:
+    """Bulk-delete every project-owned child row (children first), then the
+    project. Bulk sa.delete() keeps this fast for data-heavy projects."""
+    # Grandchildren whose FKs point at other child rows must go first.
+    db.execute(sa.delete(Defect).where(Defect.project_id == project_id))  # → executions
+    db.execute(sa.delete(VisualCheck).where(VisualCheck.project_id == project_id))  # → cases
+    db.execute(sa.delete(VisualBaseline).where(VisualBaseline.project_id == project_id))
+    # test_executions has no project_id column — reach it through its run.
+    db.execute(
+        sa.delete(TestExecution).where(
+            TestExecution.test_run_id.in_(
+                sa.select(TestRun.id).where(TestRun.project_id == project_id)
+            )
+        )
+    )
+    for model in _PROJECT_CHILD_ORDER:
+        db.execute(sa.delete(model).where(model.project_id == project_id))
+    db.execute(sa.delete(Project).where(Project.id == project_id))
+
+
 @router.delete("/{project_id}", status_code=204)
 def delete_project(
     project: Project = Depends(get_owned_project),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    db.delete(project)
+    _delete_project_cascade(db, project.id)
     db.commit()
     audit_record("project.delete", user.id, "project", project.id)

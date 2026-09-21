@@ -24,6 +24,8 @@ Every QA effort lives in a project. The list shows each target's URL and authori
 
 ![Projects list](img/00-projects.png)
 
+> **The test target itself** — the bundled demo-app at `http://localhost:9000` is a polished little storefront (gradient hero, card grids, status-chip tables) whose flaws are labeled in the UI with amber badges. See `docs/img/demo-home.png`, `demo-products.png`, `demo-dashboard.png`, `demo-login.png`, `demo-orders.png` and `demo-checkout-flaw.png`.
+
 ---
 
 ## 1. Overview — setup, authorization & credentials
@@ -43,6 +45,8 @@ The **Test credentials & sign-in** card is where authenticated targets are confi
 ## 2. Requirements — from documents to test cases (PLAN V2.1)
 
 Paste requirement text (blank-line or heading separated; `REQ-xxx:` ids optional) or upload **.md / .txt / .pdf / .docx / .xlsx / .csv / .json (Jira export)**, then hit **Generate cases for all** (or per-row). Each requirement yields a review-gated scenario set — main flow, invalid input, missing data, boundary, injection; email/reset requirements also get expired-link and link-reuse cases. Requirements that describe an API (`POST /path` style) generate API cases; the rest generate browser cases.
+
+**Priority & tags travel with the document.** Markdown/text sections accept `priority:` and `tags:` lines; CSV/XLSX use `priority` and `tags` columns; JSON supports `priority` and `tags`/`labels` keys (Jira `fields.labels` and `fields.priority.name` too). Values are normalized (`P1`/`urgent`/`blocker` → high/critical; tags split on `,` `;` `|`) and omitted values fall back to medium/empty. Every generated test case **inherits the requirement's priority**. A ready-to-fill template lives at [`docs/requirements-template.md`](requirements-template.md).
 
 Generated cases carry refs derived from the requirement (`REQ-AUTH-001` → `TC-AUTH-001-001…`), appear in Test Cases for normal approval, and re-runs are idempotent — nothing duplicates.
 

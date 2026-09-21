@@ -65,7 +65,8 @@ class TextImportIn(BaseModel):
 
 
 async def _do_import(project: Project, user: User, db: Session,
-                     drafts: list[RequirementDraft], filename: str) -> dict:
+               drafts: list[RequirementDraft], filename: str) -> dict:
+    """Persist normalized drafts; priority/tags come from the document when given."""
     if not drafts:
         raise HTTPException(status_code=422, detail="No requirement content found in input")
 
@@ -83,6 +84,14 @@ async def _do_import(project: Project, user: User, db: Session,
 
     created: list[Requirement] = []
     for d in kept:
+        priority = d.priority
+        if priority:
+            try:
+                priority_enum = Priority(priority)
+            except ValueError:
+                priority_enum = Priority.medium
+        else:
+            priority_enum = Priority.medium
         req = Requirement(
             project_id=project.id,
             external_id=d.external_id,
@@ -91,6 +100,7 @@ async def _do_import(project: Project, user: User, db: Session,
             title=d.title,
             description=d.description,
             tags=d.tags,
+            priority=priority_enum,
             status="draft",
         )
         db.add(req)

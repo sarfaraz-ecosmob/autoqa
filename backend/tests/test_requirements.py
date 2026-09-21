@@ -114,6 +114,73 @@ def test_parse_csv_header_aliases():
     assert drafts[0].title == "First req"
 
 
+def test_parse_csv_priority_and_tags_columns():
+    csv_text = (
+        "id,title,description,priority,tags\n"
+        "REQ-AUTH-001,Login works,Valid credentials reach the dashboard,high,auth;smoke\n"
+        "REQ-CART-001,Add to cart,Badge increments,,cart | ui\n"
+        "REQ-RPT-001,Order summary,Recent orders listed,URGENT,reporting|extra\n"
+    )
+    drafts, skipped = dedupe_and_normalize(parse_document("reqs.csv", csv_text.encode()))
+    assert skipped == []
+    by_id = {d.external_id: d for d in drafts}
+    assert by_id["REQ-AUTH-001"].priority == "high"
+    assert by_id["REQ-AUTH-001"].tags == ["auth", "smoke"]
+    assert by_id["REQ-CART-001"].priority is None  # empty → model default
+    assert by_id["REQ-CART-001"].tags == ["cart", "ui"]
+    assert by_id["REQ-RPT-001"].priority == "critical"  # URGENT normalized
+    assert by_id["REQ-RPT-001"].tags == ["reporting", "extra"]
+
+
+def test_parse_csv_priority_shorthands_and_header_aliases():
+    csv_text = (
+        "req,name,details,prio,label\n"
+        "REQ-P-1,Alpha,Body,P1,alpha\n"
+        "REQ-P-2,Beta,Body,P2,beta\n"
+        "REQ-P-3,Gamma,Body,P3,gamma\n"
+        "REQ-P-4,Delta,Body,blocker,delta\n"
+    )
+    drafts, _ = dedupe_and_normalize(parse_document("reqs.csv", csv_text.encode()))
+    prios = {d.external_id: d.priority for d in drafts}
+    assert prios == {"REQ-P-1": "high", "REQ-P-2": "medium", "REQ-P-3": "low",
+                     "REQ-P-4": "critical"}
+
+
+def test_parse_text_priority_and_tags_lines():
+    txt = (
+        "REQ-AUTH-003: Session timeout\n"
+        "Users are logged out after 30 minutes idle.\n"
+        "priority: critical\n"
+        "tags: auth, session\n"
+    )
+    drafts, _ = dedupe_and_normalize(parse_document("reqs.txt", txt.encode()))
+    assert drafts[0].priority == "critical"
+    assert drafts[0].tags == ["auth", "session"]
+    assert "priority:" not in drafts[0].description  # meta lines removed from body
+
+
+def test_parse_json_flat_with_tags_and_priority():
+    payload = {
+        "issues": [
+            {"external_id": "REQ-A-1", "title": "Flat req", "description": "Body",
+             "priority": "high", "tags": "one, two"},
+            {"key": "A-2", "fields": {"summary": "Jira req", "description": None,
+                                        "labels": ["jira", "backend"]}},
+        ]
+    }
+    drafts, _ = dedupe_and_normalize(parse_document("reqs.json", json.dumps(payload).encode()))
+    assert drafts[0].priority == "high"
+    assert drafts[0].tags == ["one", "two"]
+    assert drafts[1].tags == ["jira", "backend"]
+
+
+def test_dedupe_normalizes_priority_and_tags():
+    drafts = [RequirementDraft("REQ-B-1", "one", "", priority="HIGH", tags=[" a ", "", "b"])]
+    kept, _ = dedupe_and_normalize(drafts)
+    assert kept[0].priority == "high"
+    assert kept[0].tags == ["a", "b"]
+
+
 def test_parse_xlsx_roundtrip():
     openpyxl = pytest.importorskip("openpyxl")
     wb = openpyxl.Workbook()

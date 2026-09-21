@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 
 # REQ-[A-Z0-9-]+ captured anywhere in a section (e.g. REQ-AUTH-001, REQ-12)
 _REQ_TOKEN = re.compile(r"\bREQ-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.IGNORECASE)
+
+_VALID_PRIORITIES = ("critical", "high", "medium", "low")
+# Optional explicit priority line: "priority: high" (case-insensitive)
+_PRIORITY_LINE = re.compile(r"^\s*priority\s*[:\-]\s*(?P<p>critical|high|medium|low)\s*$", re.IGNORECASE)
+# Optional explicit tags line: "tags: auth, smoke" (comma or semicolon separated)
+_TAGS_LINE = re.compile(r"^\s*tags?\s*[:\-]\s*(?P<t>.+)$", re.IGNORECASE)
 # Optional explicit title line: "REQ-AUTH-001: User can reset password"
 _ID_TITLE = re.compile(
     r"^\s*(?P<id>REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*)\s*[:\-.]\s*(?P<rest>.+)$", re.IGNORECASE
@@ -32,6 +38,7 @@ class RequirementDraft:
     source: str = "document"
     source_ref: str | None = None
     tags: list[str] = field(default_factory=list)
+    priority: str | None = None  # critical|high|medium|low; None → model default
 
 
 def parse_document(filename: str, data: bytes) -> list[RequirementDraft]:
@@ -71,6 +78,29 @@ def _split_sections(text: str) -> list[tuple[str | None, str]]:
     return [(None, b.strip()) for b in blocks if b.strip()]
 
 
+def _split_meta_lines(text: str) -> tuple[str, str | None, list[str]]:
+    """Extract trailing 'priority: x' / 'tags: a, b' lines from a text block.
+
+    Returns (remaining_text, priority, tags). Meta lines may appear anywhere in
+    the block; matched lines are removed from the returned text.
+    """
+    priority: str | None = None
+    tags: list[str] = []
+    kept: list[str] = []
+    for line in text.splitlines():
+        if priority is None:
+            m = _PRIORITY_LINE.match(line)
+            if m:
+                priority = m.group("p").lower()
+                continue
+        m = _TAGS_LINE.match(line)
+        if m:
+            tags.extend(t.strip() for t in re.split(r"[,;]", m.group("t")) if t.strip())
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip(), priority, tags
+
+
 def _from_text(text: str) -> list[RequirementDraft]:
     drafts: list[RequirementDraft] = []
     for heading, body in _split_sections(text):
@@ -98,12 +128,15 @@ def _from_text(text: str) -> list[RequirementDraft]:
                 title = m.group("rest").strip()
         if not title:
             continue
+        desc, priority, tags = _split_meta_lines(desc)
         drafts.append(
             RequirementDraft(
                 external_id=external_id,
                 title=title[:MAX_TITLE],
                 description=desc[:MAX_DESCRIPTION],
                 source="document",
+                priority=priority,
+                tags=tags,
             )
         )
     return drafts
@@ -126,13 +159,25 @@ def _from_json(raw: str) -> list[RequirementDraft]:
             key = it.get("key") or ""
             title = (f.get("summary") or "").strip()
             desc = _strip_jira_wiki(str(f.get("description") or ""))
+            labels = [str(x) for x in (f.get("labels") or []) if str(x).strip()]
+            prio = f.get("priority")
+            if isinstance(prio, dict):  # Jira: {"name": "High"}
+                prio = prio.get("name")
         else:  # flat requirement shape
             key = str(it.get("external_id") or it.get("id") or "")
             title = str(it.get("title") or it.get("summary") or "").strip()
             desc = str(it.get("description") or "")
+            prio = it.get("priority")
+            raw_tags = it.get("tags") or it.get("labels") or []
+            if isinstance(raw_tags, str):
+                raw_tags = re.split(r"[,;]", raw_tags)
+            labels = [x for x in (str(x).strip() for x in raw_tags) if x]
         if not title:
             continue
         m = _REQ_TOKEN.search(key)
+        desc, meta_prio, meta_tags = _split_meta_lines(desc)
+        priority = _norm_priority(str(prio)) if prio else None
+        priority = priority or meta_prio
         out.append(
             RequirementDraft(
                 external_id=(m.group(0).upper() if m else key.upper()),
@@ -140,6 +185,8 @@ def _from_json(raw: str) -> list[RequirementDraft]:
                 description=desc[:MAX_DESCRIPTION],
                 source="jira" if "fields" in it else "document",
                 source_ref=key or None,
+                priority=priority,
+                tags=labels + meta_tags,
             )
         )
     return out
@@ -162,6 +209,8 @@ def _strip_jira_wiki(text: str) -> str:
 _ID_COLS = {"id", "req", "req_id", "key", "issue_key", "ref", "external_id", "requirement_id"}
 _TITLE_COLS = {"title", "summary", "name", "requirement", "headline"}
 _DESC_COLS = {"description", "detail", "details", "body", "text", "acceptance", "acceptance_criteria"}
+_PRIORITY_COLS = {"priority", "prio", "severity"}
+_TAGS_COLS = {"tags", "tag", "labels", "label"}
 
 
 def _pick(cols: dict[str, str], wanted: set[str]) -> str | None:
@@ -171,11 +220,40 @@ def _pick(cols: dict[str, str], wanted: set[str]) -> str | None:
     return None
 
 
+def _norm_priority(raw: str) -> str | None:
+    p = raw.strip().lower()
+    if p in _VALID_PRIORITIES:
+        return p
+    # common spreadsheet shorthands: P1/HIGH → high, P3/LOW → low, P2/MED → medium
+    p2 = re.sub(r"^p(\d)$", r"\1", p)
+    if p2 in {"1", "high", "highest"}:
+        return "high"
+    if p2 in {"2", "med", "medium", "normal"}:
+        return "medium"
+    if p2 in {"3", "4", "low", "lowest", "trivial", "minor"}:
+        return "low"
+    if p2 in {"0", "blocker", "critical", "urgent"}:
+        return "critical"
+    return None
+
+
+def _norm_tags(raw) -> list[str]:
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(x) for x in raw]
+    else:
+        parts = re.split(r"[,;|]", str(raw or ""))
+    return [t.strip() for t in parts if t.strip()][:20]
+
+
 def _rows_to_drafts(rows: list[dict]) -> list[RequirementDraft]:
     if not rows:
         return []
     norm = {c: re.sub(r"[^a-z0-9]", "", c.lower()) for c in rows[0]}
-    id_c, title_c, desc_c = _pick(norm, _ID_COLS), _pick(norm, _TITLE_COLS), _pick(norm, _DESC_COLS)
+    id_c = _pick(norm, _ID_COLS)
+    title_c = _pick(norm, _TITLE_COLS)
+    desc_c = _pick(norm, _DESC_COLS)
+    prio_c = _pick(norm, _PRIORITY_COLS)
+    tags_c = _pick(norm, _TAGS_COLS)
     if not title_c:
         # fall back: first non-id column is the title, rest is description
         candidates = [c for c in rows[0] if c != id_c]
@@ -190,13 +268,19 @@ def _rows_to_drafts(rows: list[dict]) -> list[RequirementDraft]:
             continue
         raw_id = str(row.get(id_c) or "").strip() if id_c else ""
         m = _REQ_TOKEN.search(raw_id) or _REQ_TOKEN.search(title)
+        desc = str(row.get(desc_c) or "").strip() if desc_c else ""
+        desc, prio, meta_tags = _split_meta_lines(desc)
+        priority = _norm_priority(str(row.get(prio_c) or "")) if prio_c else None
+        tags = _norm_tags(row.get(tags_c)) if tags_c else []
         drafts.append(
             RequirementDraft(
                 external_id=(m.group(0).upper() if m else raw_id.upper()),
                 title=title[:MAX_TITLE],
-                description=str(row.get(desc_c) or "").strip()[:MAX_DESCRIPTION] if desc_c else "",
+                description=desc[:MAX_DESCRIPTION],
                 source="document",
                 source_ref=raw_id or None,
+                priority=priority,
+                tags=tags + meta_tags,
             )
         )
     return drafts
@@ -285,6 +369,10 @@ def dedupe_and_normalize(
             skipped.append(ext)
             continue
         seen.add(ext)
+        priority = (d.priority or "").strip().lower()
+        if priority not in _VALID_PRIORITIES:
+            priority = None
+        tags = [t.strip() for t in (d.tags or []) if t.strip()][:20]
         kept.append(
             RequirementDraft(
                 external_id=ext[:60],
@@ -292,7 +380,8 @@ def dedupe_and_normalize(
                 description=(d.description or "").strip()[:MAX_DESCRIPTION],
                 source=d.source or "document",
                 source_ref=d.source_ref,
-                tags=list(d.tags or []),
+                tags=tags,
+                priority=priority,
             )
         )
     return kept, skipped
