@@ -171,45 +171,12 @@ class Crawler:
             # behind the login are discovered too. Credentials stay inside
             # this context; only a pass/fail marker is reported.
             if self.auth.get("login_url") and self.credentials:
-                from app.execution.auth_flow import browser_login
+                from app.execution.auth_flow import browser_login_async
 
-                sync_page = page
-
-                class _SyncShim:
-                    """Tiny adapter so the sync auth_flow helpers drive the
-                    async Playwright page (goto/fill/click/url/title)."""
-
-                    def __init__(self, p):
-                        self._p = p
-
-                    @property
-                    def url(self):
-                        return self._p.url
-
-                    def goto(self, target, timeout=15000, wait_until="domcontentloaded"):
-                        return self._p.goto(target, timeout=timeout, wait_until=wait_until)
-
-                    def fill(self, selector, value, timeout=5000):
-                        return self._p.fill(selector, value, timeout=timeout)
-
-                    def click(self, selector, timeout=5000):
-                        return self._p.click(selector, timeout=timeout)
-
-                    def wait_for_timeout(self, ms):
-                        return self._p.wait_for_timeout(ms)
-
-                    def get_by_text(self, text):
-                        return self._p.get_by_text(text)
-
-                    def locator(self, sel):
-                        return self._p.locator(sel)
-
-                    def title(self):
-                        return self._p.title()
-
-                shim = _SyncShim(sync_page)
                 login_log: list = []
-                auth_ok = browser_login(shim, self.auth, self.credentials, dict(self.credentials), login_log)
+                auth_ok = await browser_login_async(
+                    page, self.auth, self.credentials, dict(self.credentials), login_log
+                )
                 self.result.pages.append(
                     {
                         "url": self.auth["login_url"],

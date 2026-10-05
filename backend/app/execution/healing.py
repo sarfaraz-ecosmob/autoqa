@@ -109,6 +109,74 @@ def heal_selector(page, selector: str) -> tuple[str | None, str]:
     return None, "no candidate matched"
 
 
+async def heal_selector_async(page, selector: str) -> tuple[str | None, str]:
+    """Async twin of heal_selector for the async-Playwright paths (crawler,
+    async executor). Same fallback chain; LLM proposal attempted only when a
+    provider is configured. Returns (None, reason) if nothing matched."""
+    import inspect
+
+    for candidate in fallback_candidates(selector):
+        try:
+            count = page.locator(candidate).count()
+            if inspect.isawaitable(count):
+                count = await count
+            if count > 0:
+                return candidate, "fallback"
+        except Exception:
+            continue
+
+    # LLM proposal: reuse the sync evaluator on a DOM snapshot if available
+    # (page.evaluate on async pages returns an awaitable).
+    try:
+        summary = page.evaluate(_DOM_SUMMARY_JS)
+        if inspect.isawaitable(summary):
+            summary = await summary
+        if summary:
+            from app.ai import generate_json
+
+            result = generate_json(
+                system=(
+                    "You repair broken test selectors. Given a failing selector and a "
+                    'DOM summary, return JSON: {"selector": "<css or playwright role/text '
+                    'selector>", "confidence": 0..1, "reasoning": "..."} — propose the '
+                    "single most likely replacement for the SAME element. If unsure, "
+                    'return {"selector": null}.'
+                ),
+                user=f"failing selector: {selector}\n\ndom summary:\n{summary}",
+                fallback={},
+            )
+            if isinstance(result, dict) and result.get("selector"):
+                proposal = str(result["selector"])
+                count = page.locator(proposal).count()
+                if inspect.isawaitable(count):
+                    count = await count
+                if count > 0:
+                    return proposal, f"llm:{result.get('confidence', '?')}"
+    except Exception:
+        pass
+    return None, "no candidate matched"
+
+
+_DOM_SUMMARY_JS = """() => {
+    const nodes = document.querySelectorAll(
+        'a, button, input, select, textarea, [role], [data-testid], [data-test], form'
+    );
+    const lines = [];
+    for (const el of Array.from(nodes).slice(0, 120)) {
+        const parts = [el.tagName.toLowerCase()];
+        if (el.id) parts.push('#' + el.id);
+        for (const a of ['data-testid','data-test','name','aria-label','placeholder','type']) {
+            const v = el.getAttribute && el.getAttribute(a);
+            if (v) parts.push(a + '="' + v + '"');
+        }
+        const text = (el.innerText || el.value || '').trim().slice(0, 40);
+        if (text) parts.push('text="' + text + '"');
+        lines.push(parts.join('\\n'));
+    }
+    return lines.join('\\n');
+}"""
+
+
 def _llm_proposal(page, selector: str) -> tuple[str | None, str]:
     """Ask the configured LLM to propose a selector from a trimmed DOM summary.
     Grounded: only real page content is sent; the proposal must match exactly

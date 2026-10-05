@@ -112,7 +112,14 @@ def browser_login(page: Any, auth: dict, credentials: dict, variables: dict, log
         page.fill(_resolve(auth.get("username_selector") or "input[name='username']"), username, timeout=5000)
         page.fill(_resolve(auth.get("password_selector") or "input[type='password']"), password, timeout=5000)
         page.click(_resolve(auth.get("submit_selector") or "button[type='submit']"), timeout=5000)
-        page.wait_for_timeout(500)  # let the app settle after submit
+        # A form submit usually triggers a navigation; wait for the next load
+        # state (no-op for SPA logins) so the success assertion sees the final
+        # page instead of the still-navigating one.
+        try:
+            page.wait_for_load_state("load", timeout=10000)
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(300)  # let the app settle after submit
     except Exception as exc:  # noqa: BLE001
         log.append({"action": "auth_login", "result": "fail", "error": f"form submit failed: {exc}"[:200]})
         return False
@@ -225,3 +232,98 @@ def verify_login_flow(page: Any, auth: dict, credentials: dict, variables: dict,
     valid login succeeds' cases). Never returns credential material."""
     ok = browser_login(page, auth, credentials, variables, log)
     return {"passed": ok, "evidence": "auth_flow"}
+
+
+# ---------------------------------------------------------------------------
+# Async twin (discovery crawler runs on asyncio/Playwright-async; the sync
+# version above drives sync Playwright in the test executor).
+# ---------------------------------------------------------------------------
+
+
+def _login_assertion(auth: dict, variables: dict) -> str:
+    """Shared success-assertion string for both login implementations."""
+    return substitute_vars(str(auth.get("success_assert") or ""), variables).strip()
+
+
+async def browser_login_async(page: Any, auth: dict, credentials: dict, variables: dict, log: list) -> bool:
+    """Async twin of browser_login for the discovery crawler (async Playwright).
+
+    Same flow: goto → fill username/password (self-healed selectors) → submit
+    → evaluate the success assertion. Returns True when the assertion passes
+    (or when none is configured)."""
+    login_url = substitute_vars(auth.get("login_url") or "", variables)
+    if not login_url:
+        return False
+    try:
+        await page.goto(login_url, timeout=15000, wait_until="domcontentloaded")
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_login", "result": "fail", "error": f"goto failed: {exc}"[:200]})
+        return False
+
+    async def _resolve(selector: str) -> str:
+        target = substitute_vars(selector, variables)
+        try:
+            if await page.locator(target).count() > 0:
+                return target
+        except Exception:
+            pass
+        try:
+            from app.execution.healing import heal_selector_async
+
+            healed, method = await heal_selector_async(page, target)
+            if healed:
+                log.append({"action": "auth_heal", "healed_from": target, "healed_to": healed, "method": method})
+                return healed
+        except Exception:
+            pass
+        return target
+
+    username = substitute_vars(str(credentials.get("username", "")), variables)
+    password = substitute_vars(str(credentials.get("password", "")), variables)
+
+    try:
+        await page.fill(await _resolve(auth.get("username_selector") or "input[name='username']"), username, timeout=5000)
+        await page.fill(await _resolve(auth.get("password_selector") or "input[type='password']"), password, timeout=5000)
+        await page.click(await _resolve(auth.get("submit_selector") or "button[type='submit']"), timeout=5000)
+        # A form submit usually triggers a navigation; wait for the next load
+        # state (no-op for SPA logins) so the success assertion sees the final
+        # page instead of the still-navigating one.
+        try:
+            await page.wait_for_load_state("load", timeout=10000)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(300)  # let the app settle after submit
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_login", "result": "fail", "error": f"form submit failed: {exc}"[:200]})
+        return False
+
+    assertion = _login_assertion(auth, variables)
+    if not assertion or assertion.lower() == "none":
+        log.append({"action": "auth_login", "result": "pass", "note": "no success assertion configured"})
+        return True
+    ok = await _assert_pass_async(assertion, page)
+    log.append({"action": "auth_login", "result": "pass" if ok else "fail", "assert": assertion[:100]})
+    return ok
+
+
+async def _assert_pass_async(assertion: str, page: Any) -> bool:
+    """Async twin of _assert_pass (page methods are awaited)."""
+    kind, _, value = assertion.partition(":")
+    kind = kind.strip().lower()
+    value = value.strip()
+    if not kind or (not value and kind != "api_status"):
+        return False
+    try:
+        if kind == "url_not_contains":
+            return value.lower() not in page.url.lower()
+        if kind == "url_contains":
+            return value.lower() in page.url.lower()
+        if kind == "text_present":
+            return await page.get_by_text(value).count() > 0
+        if kind == "selector_present":
+            return await page.locator(value).count() > 0
+        if kind == "api_status":
+            return False  # browser flow has no token status
+    except Exception:
+        return False
+    return False

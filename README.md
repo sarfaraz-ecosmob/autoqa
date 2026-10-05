@@ -49,7 +49,7 @@ Notes for servers:
 
 ## Stage-by-stage guide (project tabs)
 
-Every project walks the same pipeline — each tab below is one stage. Typical flow: **Overview → Requirements → Discovery → APIs → Test Plan → Test Cases → Test Data → Executions → History → Quality → Assistant → Reports → Automations**. Stages 1–8 are the core loop (URL → tested requirements); the rest add non-functional depth and continuous operation.
+Every project walks the same pipeline — each tab below is one stage. Typical flow: **Overview → Requirements → Discovery → APIs → Test Plan → Test Cases → Groups → Test Data → Executions → History → Quality → Assistant → Reports → Automations**. Stages 1–9 are the core loop (URL → tested requirements); the rest add non-functional depth and continuous operation.
 
 ### 1. Overview — project setup & authorization
 
@@ -111,7 +111,18 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - If discovery saw checkout/payment endpoints, payment scenarios are added: successful sandbox payment, **declined card** (`4000000000000002`, asserting a handled 4xx — never 5xx) and **idempotent replay** (same idempotency key must not double-charge). Always use your gateway's sandbox cards.
 - Review actions: approve / reject / edit / disable / approve-all / approve-selected. **Only approved cases execute.**
 
-### 7. Test Data — environments & datasets
+### 7. Groups — saved selections with a type of test
+
+**Use:** Bundle the cases you run together repeatedly (smoke set, checkout flows, a release's scope) and declare what type of test each bundle covers.
+
+**How it works:**
+
+- Tick cases in the Groups tab, name the group, and pick one or more **test types**: functional, regression, ui, api, integration, security/authentication, performance/load, accessibility, compatibility (chips map to each case's category).
+- A group with declared types runs **only cases of those categories**; no type selected means every case in the group.
+- Groups can also pin a **test plan version** (`test_plan_id`) — combined with the types, both filters apply at run selection.
+- Re-run a group with one click from Groups or Executions; type badges on each row show what it covers. API: `POST /api/projects/{id}/suites` with `test_types: ["functional", "security"]`; runs accept `test_types` too (`POST /api/projects/{id}/test-runs`).
+
+### 8. Test Data — environments & datasets
 
 **Use:** Per-environment data (staging vs UAT), secret datasets and generated data — resolved into `{{placeholders}}` at run time.
 
@@ -122,18 +133,18 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Resolution order: project credentials < environment variables < active datasets — so Test Data can **override** project credentials per environment. Env-scoped datasets only apply to their environment. A resolution preview shows masked values.
 - Secrets are decrypted only inside the execution path — never in logs, API responses or reports.
 
-### 8. Executions — run control & live dashboard
+### 9. Executions — run control & live dashboard
 
 **Use:** Run approved cases (browser + API) and watch results live — no refresh needed.
 
 **How it works:**
 
-- `POST /test-runs` (browser selection, retries, environment, parallelism) → start/pause/resume/stop; runs dispatch to Celery workers with a per-run parallelism cap that tops up as tests finish.
+- `POST /test-runs` (browser selection, retries, environment, parallelism, **test types**) → start/pause/resume/stop; runs dispatch to Celery workers with a per-run parallelism cap that tops up as tests finish. Scope a run by saved group, plan version and/or **Type of test** — a typed group locks the type choice to its own.
 - **Browser cases:** each execution first establishes the authenticated session (the project's login flow), then runs its steps; a login failure reports `auth_login_failed` instead of a misleading "element not found". Failed selectors self-heal (fallback chain → grounded LLM proposal from the live DOM), recorded in evidence.
 - **API cases:** the `Authorization: Bearer …` header is auto-attached from the token endpoint or static token; validations cover status, body, JSON schema, headers and response time.
 - Live WebSocket counters (Total/Running/Passed/Failed/…), timestamped step logs, per-step timing, and screenshots/traces on failure stored as artifacts.
 
-### 9. History — trends & run comparison
+### 10. History — trends & run comparison
 
 **Use:** Regression intelligence — what changed between runs.
 
@@ -142,7 +153,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - Past runs with pass/fail/skip counts; pick any two runs as base + target and compare.
 - The diff shows: new failures, resolved failures, persistent failures, new/removed tests, duration changes and performance (p95) shifts — e.g. "TC-CHECKOUT-002 failed in run #12 but passed in #11".
 
-### 10. Quality — accessibility, performance & security
+### 11. Quality — accessibility, performance & security
 
 **Use:** Non-functional depth beyond functional pass/fail.
 
@@ -152,7 +163,7 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - **Performance:** user-defined VUs/RPS/duration → p50/p90/p95/p99, throughput, error rate; threshold breaches are flagged; guardrails (hard request caps) protect production targets.
 - **Security scan** in three tiers (Passive → Safe Active → Authorized Full, the last requiring explicit re-confirmation), isolated worker, non-destructive payloads; findings carry severity and feed reports.
 
-### 11. Assistant — grounded AI copilot
+### 12. Assistant — grounded AI copilot
 
 **Use:** Ask about your project in plain language: "why did tests fail?", "compare the last two runs", "give me a client summary".
 
@@ -162,16 +173,17 @@ Every project walks the same pipeline — each tab below is one stage. Typical f
 - If an LLM key is configured (Settings → AI), it may only **rephrase** the verified answer, under a hard ~30s budget with silent fallback — so gateway timeouts can't recur. Works fine with no LLM at all.
 - Answers are marked as grounded; the assistant cannot fabricate numbers.
 
-### 12. Reports — professional deliverables
+### 13. Reports — professional deliverables
 
 **Use:** Share results with stakeholders: **CSV, Excel, PDF, HTML, JSON** per project or per run.
 
 **How it works:**
 
-- Generation is a background job on the `reports` queue; download when the status is `completed`.
+- Generation is a background job on the `reports` queue; every completed report can be **viewed in the browser** — *View* renders it in an in-page preview (PDF/HTML natively, CSV as a table, JSON pretty-printed; Excel offers a download), *Open in browser* pops it out into a new tab — or downloaded as a file.
+- Completed runs also carry a **View report** button in Executions, which opens the run's HTML report in the browser (generating it on demand if needed).
 - Content: executive summary, app/environment info, test plan, execution stats, per-case results, defects, security/a11y/perf results, embedded failure screenshots (HTML/PDF) and evidence-grounded recommendations.
 
-### 13. Automations — continuous testing
+### 14. Automations — continuous testing
 
 **Use:** Keep QA running without you: schedules, integrations, stability and visual monitoring.
 
@@ -241,6 +253,16 @@ The key is stored in the DB (`llm_settings`, singleton) and overrides `.env`. Mo
 ./scripts/dev.sh clean      # stop + remove volumes
 ```
 
+### Live E2E checks (real browser, run against the Docker stack)
+
+```bash
+# credentials + auth flow + authenticated discovery
+docker compose exec -T browser-worker python /app/scripts/e2e_ui_credentials_check.py
+
+# groups with test types + in-browser report viewing
+docker compose exec -T browser-worker python /app/scripts/e2e_ui_groups_reports_check.py
+```
+
 ## Layout
 
 ```
@@ -258,7 +280,7 @@ Every phase is committed (see `git log`). The `.agents/skills/git-init/SKILL.md`
 
 ## Reports (§19)
 
-Generate **CSV, Excel (XLSX), PDF, HTML, JSON** reports per project or per run from the Reports tab (or `POST /api/projects/{id}/reports`). Generation runs as a background job on the `reports` queue; download when status is `completed`. Reports include executive summary, app/environment info, test plan, execution stats, per-case results, defects, security findings, performance and accessibility results, embedded failure screenshots (HTML/PDF), and evidence-grounded recommendations.
+Generate **CSV, Excel (XLSX), PDF, HTML, JSON** reports per project or per run from the Reports tab (or `POST /api/projects/{id}/reports`). Generation runs as a background job on the `reports` queue; completed reports can be **viewed directly in the browser** (`GET /api/projects/{id}/reports/{rid}/download?inline=true` — the UI renders PDF/HTML natively, CSV as a table and JSON pretty-printed, with an *Open in browser* new-tab option) or downloaded as files. Reports include executive summary, app/environment info, test plan, execution stats, per-case results, defects, security findings, performance and accessibility results, embedded failure screenshots (HTML/PDF), and evidence-grounded recommendations.
 
 ## Screenshot evidence (§12)
 

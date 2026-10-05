@@ -23,6 +23,10 @@ services:
   # ---------- Backend API ----------
   backend:
     build: ./backend
+    # --reload: dev convenience only — uvicorn restarts the app process
+    # in-container when the mounted ./backend code changes. No rebuild,
+    # no manual restart. Data/config/credential changes never needed it.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
@@ -100,8 +104,11 @@ services:
   # ---------- Workers ----------
   worker:
     build: ./backend
-    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=autoqa,reports,celery --hostname=worker@%h
+    # dev_autoreload.py restarts the worker when mounted .py files change
+    # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
+    command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=autoqa,reports,celery --hostname=worker@%h
     environment:
+      AUTOQA_CODE_RELOAD: "1"
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
@@ -131,8 +138,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.browser-worker
-    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=browser --hostname=browser-worker@%h
+    # dev_autoreload.py restarts the worker when mounted .py files change
+    # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
+    command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=browser --hostname=browser-worker@%h
     environment:
+      AUTOQA_CODE_RELOAD: "1"
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
@@ -190,8 +200,11 @@ services:
   # ---------- Security worker (isolated, spec §13) ----------
   security-worker:
     build: ./backend
-    command: celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 --queues=security --hostname=security-worker@%h --schedule=/tmp/celerybeat-schedule
+    # dev_autoreload.py restarts the worker when mounted .py files change
+    # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
+    command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 --queues=security --hostname=security-worker@%h --schedule=/tmp/celerybeat-schedule
     environment:
+      AUTOQA_CODE_RELOAD: "1"
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
       AUTOQA_DATABASE_URL: ${AUTOQA_DATABASE_URL:-postgresql+psycopg://autoqa:autoqa_dev_password@postgres:5432/autoqa}

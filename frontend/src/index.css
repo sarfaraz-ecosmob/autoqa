@@ -20,3 +20,31 @@ body {
     @apply rounded-xl border border-slate-200 bg-white shadow-card;
   }
 }
+
+/* Inline report viewer (CSV table / pretty JSON rendered from the Groups…Reports tab) */
+.report-inline-view table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.report-inline-view th,
+.report-inline-view td {
+  border: 1px solid #e2e8f0; /* slate-200 */
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.report-inline-view th {
+  background: #f8fafc; /* slate-50 */
+  font-weight: 600;
+  color: #334155; /* slate-700 */
+  position: sticky;
+  top: 0;
+}
+.report-inline-view pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #334155; /* slate-700 */
+}

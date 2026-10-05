@@ -123,6 +123,7 @@ def get_report(
 @router.get("/{report_id}/download")
 def download_report(
     report_id: str,
+    inline: bool = False,  # ?inline=true → render in the browser instead of downloading
     project: Project = Depends(get_owned_project),
     db=Depends(get_db),
 ) -> Response:
@@ -143,8 +144,9 @@ def download_report(
 
     scope = "run" if row.test_run_id else "project"
     filename = f"autoqa-{scope}-report-{report_id[:8]}.{row.format}"
+    disposition = "inline" if inline else "attachment"
     return Response(
         content=content,
         media_type=_MEDIA_TYPES.get(row.format, "application/octet-stream"),
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )

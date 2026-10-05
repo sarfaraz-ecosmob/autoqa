@@ -15,6 +15,7 @@ from app.api import failures as failure_routes
 from app.api import realtime as realtime_routes
 from app.api import security as security_routes
 from app.api import settings as settings_routes
+from app.api import suites as suite_routes
 from app.api import testdata as testdata_routes
 from app.api import testcases as testcase_routes
 from app.api import testplans as testplan_routes
@@ -90,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(analyze_routes.router)
     app.include_router(testplan_routes.router)
     app.include_router(testcase_routes.router)
+    app.include_router(suite_routes.router)
     app.include_router(testrun_routes.router)
     app.include_router(realtime_routes.router)
     app.include_router(failure_routes.router)

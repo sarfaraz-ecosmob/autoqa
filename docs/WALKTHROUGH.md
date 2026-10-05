@@ -1,6 +1,6 @@
 # AutoQA Walkthrough — stage by stage with the demo-app
 
-This is a hands-on tour of AutoQA's 13 project stages, each shown with a real screenshot from the bundled **demo-app** (a deliberately flawed test target at `http://demo-app:9000`). Follow along with your own instance at `http://localhost:8080`.
+This is a hands-on tour of AutoQA's project stages, each shown with a real screenshot from the bundled **demo-app** (a deliberately flawed test target at `http://demo-app:9000`). Follow along with your own instance at `http://localhost:8080`.
 
 > **How these screenshots were captured:** the UI was driven with Playwright inside the running Docker stack (`backend/scripts/walkthrough_shots.py`), using the demo project with seeded data. Re-run the script any time the UI changes:
 >
@@ -12,7 +12,7 @@ This is a hands-on tour of AutoQA's 13 project stages, each shown with a real sc
 **The pipeline at a glance:**
 
 ```
-Overview → Requirements → Discovery → APIs → Test Plan → Test Cases → Test Data
+Overview → Requirements → Discovery → APIs → Test Plan → Test Cases → Groups → Test Data
    → Executions → History → Quality → Assistant → Reports → Automations
 ```
 
@@ -94,6 +94,21 @@ Review: approve / reject / edit / disable individually, or **Approve all**. Only
 
 ---
 
+## 6b. Groups — saved selections with a type of test
+
+A group (suite) is a named, reusable selection of test cases. Tick cases in the list, name the group, and pick **what type of test the group runs**: Functional, Regression, UI, API testing, Integration, Security / authentication, Load / performance, Accessibility, or Compatibility (multi-select chips).
+
+- The type chips map to each test case's category; a group with declared types runs **only cases of those categories**, even if the selection contains others.
+- No type selected = the group runs every case it contains.
+- Saved groups show their type as badges next to the case count (plus the plan-version pin, if set) — and can be re-run with one click from here or the Executions tab.
+- Editing a group reloads its cases, plan pin and types into the picker.
+
+The Executions tab's **Type of test** dropdown filters ad-hoc runs the same way (locked to the group's types when a typed group is selected).
+
+![Groups — test-type picker and saved group badges](img/06b-groups.png)
+
+---
+
 ## 7. Test Data — environments & datasets
 
 - **Environments** (staging, uat…): base URL + variables; runs accept an environment.
@@ -107,7 +122,7 @@ Resolution order at run time: project credentials < environment variables < acti
 
 ## 8. Executions — run control & live dashboard
 
-**▶ Start run** dispatches approved cases to Celery workers (browser + API). The live page shows counters (Total / Running / Passed / Failed / Skipped), progress, and timestamped step logs over WebSocket — no refresh needed.
+**▶ Start run** dispatches approved cases to Celery workers (browser + API). Pick a saved **group**, a **test plan version** and a **type of test** before starting — the run executes only cases matching all chosen filters (a typed group locks the type choice to its own). The live page shows counters (Total / Running / Passed / Failed / Skipped), progress, and timestamped step logs over WebSocket — no refresh needed.
 
 Browser cases signed in first (the auth flow from stage 1); API cases carried the auto-attached Bearer header. Failed selectors self-healed where possible, recorded in evidence.
 
@@ -118,6 +133,10 @@ Live, mid-run:
 Completed (demo-app is deliberately flawed, so failures are expected — each carries a screenshot + evidence bundle):
 
 ![Executions — run complete](img/08b-executions-done.png)
+
+Completed runs also get a **View report** button: it opens the run's HTML report right in the browser (generating it on demand if there isn't one yet) — no download needed.
+
+![Executions — group/type filters and per-run View report](img/08c-executions-filters.png)
 
 ---
 
@@ -149,9 +168,13 @@ Ask in plain language: "why did tests fail?", "which module has the most defects
 
 ## 12. Reports — professional deliverables
 
-Generate **CSV / Excel / PDF / HTML / JSON** for the whole project or a single run. Generation is a background job on the `reports` queue; download when `completed`. Contents: executive summary, environment/app info, test plan, execution stats, per-case results, defects, security/a11y/perf results, embedded failure screenshots (HTML/PDF) and evidence-grounded recommendations.
+Generate **CSV / Excel / PDF / HTML / JSON** for the whole project or a single run. Generation is a background job on the `reports` queue. Every completed report can be **viewed directly in the browser**: *View* opens it in an in-page preview (PDF and HTML render natively; CSV becomes a table; JSON is pretty-printed; Excel offers a download), *Open in browser* pops it out into a new tab — and *Download* still saves the file. Contents: executive summary, environment/app info, test plan, execution stats, per-case results, defects, security/a11y/perf results, embedded failure screenshots (HTML/PDF) and evidence-grounded recommendations.
 
 ![Reports — generation & history](img/12-reports.png)
+
+In-browser preview:
+
+![Report — inline viewer](img/12b-report-viewer.png)
 
 ---
 
@@ -169,10 +192,10 @@ Generate **CSV / Excel / PDF / HTML / JSON** for the whole project or a single r
 
 ## The loop
 
-Stages 1–7 are the core loop you run per release (requirements → … → executions); 8–13 make QA continuous. Typical cadence:
+Stages 1–7 (including 6b Groups) are the core loop you run per release (requirements → … → executions); 8–13 make QA continuous. Typical cadence:
 
 1. Set up once: credentials, requirements, environments, datasets, schedule, webhook.
-2. Per release: **Requirements** (for new features) → **Discovery** (if the app changed) → **Executions** (or let the schedule fire) → **History** compare against the last good run.
+2. Per release: **Requirements** (for new features) → **Discovery** (if the app changed) → **Groups** (bundle the cases worth running, with their type) → **Executions** (or let the schedule fire) → **History** compare against the last good run.
 3. Share: **Reports** for stakeholders; the **traceability matrix** for compliance; **Assistant** for quick answers; **Automations** keeps it all running nightly.
 
 For the stage semantics in more depth, see the [stage-by-stage guide in the README](../README.md#stage-by-stage-guide-project-tabs). For credentials, auth flows and payment testing, see [Authenticated targets](../README.md#authenticated-targets-credentials-portals--payment-flows); for the requirements stage API, see [Requirements & Traceability](../README.md#requirements--traceability-plan-v21).

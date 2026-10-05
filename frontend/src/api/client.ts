@@ -115,3 +115,27 @@ export async function download(path: string): Promise<void> {
   a.remove();
   URL.revokeObjectURL(a.href);
 }
+
+/** Fetch a binary endpoint as a Blob (for inline viewing, e.g. PDF/HTML reports). */
+export async function fetchBlob(path: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (res.status === 401) {
+    clearTokens();
+    window.location.href = "/login";
+    throw new ApiError(401, "Session expired");
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body);
+    } catch {
+      /* keep statusText */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+}

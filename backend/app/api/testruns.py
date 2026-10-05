@@ -14,7 +14,9 @@ from app.models import (
     Project,
     RunStatus,
     TestCase,
+    TestCategory,
     TestExecution,
+    TestPlan,
     TestRun,
     TestStatus,
     User,
@@ -27,7 +29,11 @@ router = APIRouter(prefix="/api/projects/{project_id}/test-runs", tags=["test-ru
 class RunIn(BaseModel):
     label: str = Field(default="", max_length=200)
     browsers: list[str] = Field(default_factory=lambda: ["chromium"])
-    suite: str | None = None  # smoke | regression | None=all
+    suite: str | None = None  # suite NAME filter (smoke | regression | ...)
+    suite_id: str | None = None  # saved suite/group to run
+    test_plan_id: str | None = None  # only cases from this plan version
+    test_types: list[str] | None = None  # category filter (functional, api, security, ...)
+    categories: list[str] | None = None  # legacy alias for test_types
     modules: list[str] | None = None
     priorities: list[str] | None = None
     refs: list[str] | None = None  # explicit selected tests
@@ -53,7 +59,108 @@ def _serialize(run: TestRun) -> dict:
     }
 
 
+def _resolve_suite_filter(db: Session, project_id: str, body: RunIn) -> set[str] | None:
+    """Resolve a suite (by id or name) to the set of refs it contains.
+
+    Returns None when no suite filter is requested. Refs stored in a suite that
+    no longer match a live case are dropped by the final query intersection.
+    """
+    from app.models import TestSuite
+
+    if body.suite_id:
+        suite = db.execute(
+            sa.select(TestSuite).where(
+                TestSuite.project_id == project_id, TestSuite.id == body.suite_id
+            )
+        ).scalar_one_or_none()
+        if suite is None:
+            raise HTTPException(status_code=404, detail="Suite not found")
+        return set(suite.test_case_ids or [])
+    if body.suite:
+        suite = db.execute(
+            sa.select(TestSuite).where(TestSuite.project_id == project_id, TestSuite.name == body.suite)
+        ).scalar_one_or_none()
+        return set(suite.test_case_ids or []) if suite else set()
+    return None
+
+
+def _resolve_plan_filter(db: Session, project_id: str, suite_id: str | None, plan_id: str | None) -> set[str] | None:
+    """Refs allowed by the plan pin: the suite's pinned plan (if any), else the
+    explicit RunIn.test_plan_id. Returns None when no plan restriction applies.
+    """
+    effective = plan_id
+    if suite_id:
+        from app.models import TestSuite
+
+        suite = db.execute(
+            sa.select(TestSuite).where(
+                TestSuite.project_id == project_id, TestSuite.id == suite_id
+            )
+        ).scalar_one_or_none()
+        if suite is not None and suite.test_plan_id:
+            effective = suite.test_plan_id  # suite pin wins over ad-hoc choice
+    if not effective:
+        return None
+    plan = db.execute(
+        sa.select(TestPlan).where(TestPlan.id == effective, TestPlan.project_id == project_id)
+    ).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Test plan not found")
+    refs = set(
+        db.execute(
+            sa.select(TestCase.ref).where(
+                TestCase.project_id == project_id, TestCase.test_plan_id == effective
+            )
+        ).scalars()
+    )
+    if not refs:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No test cases are linked to plan v{plan.version} — generate or link cases to it first",
+        )
+    return refs
+
+
+def _resolve_category_filter(
+    db: Session, project_id: str, suite_id: str | None, test_types: list[str] | None
+) -> set[TestCategory] | None:
+    """Categories allowed by the type filter.
+
+    A saved group's own test types win over the ad-hoc request filter (mirrors
+    the plan-pin precedence), so running a "security" group always runs its
+    declared type even if the UI sends something else. Returns None when no
+    restriction applies.
+    """
+    effective = test_types or []
+    if suite_id:
+        from app.models import TestSuite
+
+        suite = db.execute(
+            sa.select(TestSuite).where(
+                TestSuite.project_id == project_id, TestSuite.id == suite_id
+            )
+        ).scalar_one_or_none()
+        if suite is not None and suite.test_types:
+            effective = suite.test_types  # suite types win over ad-hoc choice
+    if not effective:
+        return None
+    categories: set[TestCategory] = set()
+    for t in effective:
+        try:
+            categories.add(TestCategory(t))
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown test type: {t} — must be one of {', '.join(c.value for c in TestCategory)}",
+            )
+    return categories
+
+
 def _select_cases(db: Session, project_id: str, body: RunIn) -> list[TestCase]:
+    plan_refs = _resolve_plan_filter(db, project_id, body.suite_id, body.test_plan_id)
+    category_filter = _resolve_category_filter(
+        db, project_id, body.suite_id, body.test_types or body.categories
+    )
     stmt = sa.select(TestCase).where(
         TestCase.project_id == project_id,
         TestCase.approved.is_(True),
@@ -65,15 +172,17 @@ def _select_cases(db: Session, project_id: str, body: RunIn) -> list[TestCase]:
         stmt = stmt.where(TestCase.module.in_(body.modules))
     elif body.priorities:
         stmt = stmt.where(TestCase.priority.in_([Priority(p) for p in body.priorities]))
+    elif body.suite_id or body.suite:
+        # Suite-selected runs use the suite's refs, combined with any other filter
+        stmt = stmt.where(TestCase.ref.in_(_resolve_suite_filter(db, project_id, body)))
     rows = db.execute(stmt.order_by(TestCase.priority, TestCase.ref)).scalars().all()
-    if body.suite:
-        from app.models import TestSuite
-
-        suite = db.execute(
-            sa.select(TestSuite).where(TestSuite.project_id == project_id, TestSuite.name == body.suite)
-        ).scalar_one_or_none()
-        allowed = set(suite.test_case_ids or []) if suite else set()
+    if body.suite_id or body.suite:
+        allowed = _resolve_suite_filter(db, project_id, body)
         rows = [r for r in rows if r.ref in allowed]
+    if plan_refs is not None:
+        rows = [r for r in rows if r.ref in plan_refs]
+    if category_filter is not None:
+        rows = [r for r in rows if r.category in category_filter]
     return rows
 
 
@@ -98,6 +207,9 @@ def create_run(
         config={
             "max_retries": body.max_retries,
             "suite": body.suite,
+            "suite_id": body.suite_id,
+            "test_plan_id": body.test_plan_id,
+            "test_types": body.test_types or body.categories,
             "modules": body.modules,
             "priorities": body.priorities,
             "refs": body.refs,

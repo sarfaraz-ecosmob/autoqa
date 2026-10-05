@@ -241,6 +241,16 @@ def generate_cases_for_requirement(
         ).scalars()
     )
 
+    # Stamp requirement-derived cases with the project's latest plan version
+    # so plan-pinned groups include them.
+    from app.models import TestPlan
+
+    latest_plan = db.execute(
+        select(TestPlan)
+        .where(TestPlan.project_id == project.id)
+        .order_by(TestPlan.version.desc())
+    ).scalars().first()
+
     created: list[TestCase] = []
     skipped: list[str] = []
     counter = 0
@@ -263,6 +273,7 @@ def generate_cases_for_requirement(
             steps=s["steps"],
             expected_result=s["expected"],
             kind=s["kind"],
+            test_plan_id=latest_plan.id if latest_plan else None,
             enabled=True,
             approved=False,  # review gate
         )

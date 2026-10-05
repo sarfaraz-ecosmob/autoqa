@@ -71,12 +71,51 @@ interface TestCase {
   priority: string;
   expected_result: string;
   kind: string;
+  test_plan_id?: string | null;
   enabled: boolean;
   approved: boolean;
 }
 
-const TABS = ["overview", "requirements", "discovery", "apis", "test-plan", "test-cases", "test-data", "executions", "history", "quality", "assistant", "reports", "automations"] as const;
+interface Suite {
+  id: string;
+  name: string;
+  test_plan_id: string | null;
+  test_plan_label: string | null;
+  test_types: string[];
+  test_case_ids: string[];
+  case_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PlanVersion {
+  id: string;
+  version: number;
+  label: string;
+  objective: string;
+  approved: boolean;
+  created_at: string;
+}
+
+const TABS = ["overview", "requirements", "discovery", "apis", "test-plan", "test-cases", "groups", "test-data", "executions", "history", "quality", "assistant", "reports", "automations"] as const;
 type Tab = (typeof TABS)[number];
+
+// Type of test a group targets — mirrors backend TestCategory enum (models.py).
+const TEST_TYPES: { value: string; label: string }[] = [
+  { value: "functional", label: "Functional" },
+  { value: "regression", label: "Regression" },
+  { value: "ui", label: "UI" },
+  { value: "api", label: "API testing" },
+  { value: "integration", label: "Integration" },
+  { value: "security", label: "Security / authentication" },
+  { value: "performance", label: "Load / performance" },
+  { value: "accessibility", label: "Accessibility" },
+  { value: "compatibility", label: "Compatibility" },
+];
+
+function testTypeLabel(value: string): string {
+  return TEST_TYPES.find((t) => t.value === value)?.label ?? value;
+}
 
 interface RunRow {
   id: string;
@@ -279,6 +318,18 @@ export default function ProjectDetailPage() {
   const [credForm, setCredForm] = useState<AuthForm>(emptyAuth);
   const [credBusy, setCredBusy] = useState(false);
   const [credMsg, setCredMsg] = useState<string | null>(null);
+  // show/hide saved credentials + real-browser sign-in test
+  const [showCreds, setShowCreds] = useState(false);
+  const [revealData, setRevealData] = useState<{ credentials: Record<string, string>; auth: Record<string, unknown> } | null>(null);
+  const [revealBusy, setRevealBusy] = useState(false);
+  const [testSignIn, setTestSignIn] = useState<{ state: string; detail: string | null }>({ state: "", detail: null });
+  const [testBusy, setTestBusy] = useState(false);
+  // auto-detect selectors + login dry run + API auth dry run
+  const [detectBusy, setDetectBusy] = useState(false);
+  const [dryRun, setDryRun] = useState<{ state: string; detail: string | null }>({ state: "", detail: null });
+  const [dryBusy, setDryBusy] = useState(false);
+  const [apiTest, setApiTest] = useState<{ state: string; detail: string | null }>({ state: "", detail: null });
+  const [apiTestBusy, setApiTestBusy] = useState(false);
 
   // discovery
   const [pages, setPages] = useState<PageRow[]>([]);
@@ -294,6 +345,17 @@ export default function ProjectDetailPage() {
   // test cases
   const [cases, setCases] = useState<TestCase[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+
+  // saved groups (suites) of test cases
+  const [suites, setSuites] = useState<Suite[]>([]);
+  const [newSuiteName, setNewSuiteName] = useState("");
+  const [editingSuiteId, setEditingSuiteId] = useState<string | null>(null);
+  const [runSuiteId, setRunSuiteId] = useState<string>(""); // executions tab: which group to run
+  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
+  const [suitePlanId, setSuitePlanId] = useState<string>(""); // plan pin for new/edited group
+  const [suiteTestTypes, setSuiteTestTypes] = useState<string[]>([]); // type of test for new/edited group
+  const [runPlanId, setRunPlanId] = useState<string>(""); // executions tab: plan filter
+  const [runTestType, setRunTestType] = useState<string>(""); // executions tab: test-type filter
 
   // runs
   const [runs, setRuns] = useState<RunRow[]>([]);
@@ -318,6 +380,10 @@ export default function ProjectDetailPage() {
     format: "pdf",
     runId: "",
   });
+  // inline report viewer (PDF/HTML rendered in-page; CSV/JSON/XLSX also viewable)
+  const [viewReport, setViewReport] = useState<{ id: string; kind: string; url: string; html?: string } | null>(null);
+  const [viewBusy, setViewBusy] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
 
   // history (Phase 13)
   const [history, setHistory] = useState<HistoryRow[]>([]);
@@ -465,11 +531,197 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function toggleReveal() {
+    if (showCreds) {
+      setShowCreds(false);
+      setRevealData(null); // drop decrypted values from memory immediately
+      return;
+    }
+    setRevealBusy(true);
+    try {
+      const data = await api.get<{ credentials: Record<string, string>; auth: Record<string, unknown> }>(
+        `/projects/${id}/credentials?reveal=true`,
+      );
+      setRevealData(data);
+      setShowCreds(true);
+    } catch (err) {
+      setCredMsg(err instanceof Error ? err.message : "Could not reveal credentials");
+    } finally {
+      setRevealBusy(false);
+    }
+  }
+
+  async function runTestSignIn() {
+    setTestBusy(true);
+    setError(null);
+    setTestSignIn({ state: "running", detail: "launching a real browser to try your login flow…" });
+    try {
+      const { task_id } = await api.post<{ task_id: string }>(`/projects/${id}/test-sign-in`);
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const s = await api.get<{ status: string; result?: { status?: string; login_ok?: boolean; error?: string; final_url?: string; final_title?: string } }>(
+          `/projects/${id}/test-sign-in/status?task_id=${task_id}`,
+        );
+        if (s.status === "SUCCESS") {
+          const r = s.result ?? {};
+          if (r.login_ok) {
+            setTestSignIn({
+              state: "ok",
+              detail: `Signed in ✓ — landed on ${r.final_url ?? "?"}${r.final_title ? ` ("${r.final_title}")` : ""}. Scans/tests will run this same flow before crawling.`,
+            });
+          } else {
+            setTestSignIn({
+              state: "fail",
+              detail: `Sign-in FAILED — ${r.error ?? "the success check did not pass after submitting the form"}. Check the selectors, the success check, and that the account is valid.`,
+            });
+          }
+          return;
+        }
+        if (s.status === "FAILURE") {
+          setTestSignIn({ state: "fail", detail: s.result?.error ?? "Task failed" });
+          return;
+        }
+      }
+      setTestSignIn({ state: "fail", detail: "Timed out waiting for the sign-in test" });
+    } catch (err) {
+      setTestSignIn({ state: "fail", detail: err instanceof Error ? err.message : "Test failed" });
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
   async function loadApis() {
     try {
       setApis(await api.get<ApiRow[]>(`/projects/${id}/analyze/apis`));
     } catch {
       setApis([]);
+    }
+  }
+
+  // ---------- Auto-detect selectors from the login page ----------
+  async function autoDetect() {
+    if (!credForm.login_url.trim()) {
+      setCredMsg("Enter the login page URL first — detection opens it in a browser.");
+      return;
+    }
+    setDetectBusy(true);
+    setCredMsg(null);
+    try {
+      const { task_id } = await api.post<{ task_id: string }>(`/projects/${id}/detect-login`, {
+        login_url: credForm.login_url.trim(),
+      });
+      type DetectResult = { username_selector?: string; password_selector?: string; submit_selector?: string; error?: string };
+      let result: DetectResult | null = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const s = await api.get<{ status: string; result?: DetectResult }>(
+          `/projects/${id}/detect-login/status?task_id=${task_id}`,
+        );
+        if (s.status === "SUCCESS") {
+          result = s.result ?? null;
+          break;
+        }
+        if (s.status === "FAILURE") break;
+      }
+      if (result?.username_selector || result?.password_selector) {
+        setCredForm((f) => ({
+          ...f,
+          username_selector: result.username_selector || f.username_selector,
+          password_selector: result.password_selector || f.password_selector,
+          submit_selector: result.submit_selector || f.submit_selector,
+        }));
+        const found = [
+          result.username_selector ? "username" : null,
+          result.password_selector ? "password" : null,
+          result.submit_selector ? "submit" : null,
+        ].filter(Boolean);
+        setCredMsg(`Detected selectors: ${found.join(", ")} — review and Save.`);
+      } else {
+        setCredMsg(result?.error ? `Detection failed: ${result.error}` : "No login form detected on that page (no password field found). Check the URL.");
+      }
+    } catch (err) {
+      setCredMsg(err instanceof Error ? err.message : "Detection failed");
+    } finally {
+      setDetectBusy(false);
+    }
+  }
+
+  // ---------- Login dry run (uses current form values, saves nothing) ----------
+  async function runDryRun() {
+    if (!credForm.login_url.trim()) {
+      setDryRun({ state: "fail", detail: "Enter the login page URL first." });
+      return;
+    }
+    setDryBusy(true);
+    setDryRun({ state: "running", detail: "Opening the login page in a real browser and trying the form…" });
+    try {
+      const { task_id } = await api.post<{ task_id: string }>(`/projects/${id}/dry-run-login`, {
+        login_url: credForm.login_url.trim(),
+        username_selector: credForm.username_selector || null,
+        password_selector: credForm.password_selector || null,
+        submit_selector: credForm.submit_selector || null,
+        success_assert: credForm.success_assert || null,
+        username: credForm.username || null,
+        password: credForm.password || null,
+      });
+      type DryRunResult = { login_ok?: boolean; error?: string; final_url?: string };
+      let result: DryRunResult | null = null;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const s = await api.get<{ status: string; result?: DryRunResult }>(
+          `/projects/${id}/dry-run-login/status?task_id=${task_id}`,
+        );
+        if (s.status === "SUCCESS") {
+          result = s.result ?? null;
+          break;
+        }
+        if (s.status === "FAILURE") {
+          result = s.result ?? { error: "task failed" };
+          break;
+        }
+      }
+      if (result?.login_ok) {
+        setDryRun({
+          state: "ok",
+          detail: `Dry run successful — signed in and landed on ${result.final_url ?? "?"}. Save the credentials and run your scan.`,
+        });
+      } else if (result) {
+        setDryRun({
+          state: "fail",
+          detail: `Dry run FAILED — ${result.error ?? "the selectors or success check did not pass"}. Adjust the fields and try again.`,
+        });
+      } else {
+        setDryRun({ state: "fail", detail: "Timed out waiting for the dry run." });
+      }
+    } catch (err) {
+      setDryRun({ state: "fail", detail: err instanceof Error ? err.message : "Dry run failed" });
+    } finally {
+      setDryBusy(false);
+    }
+  }
+
+  // ---------- API auth dry run (synchronous, masked output) ----------
+  async function runApiTest() {
+    setApiTestBusy(true);
+    setApiTest({ state: "running", detail: "Sending the auth header to your target…" });
+    try {
+      const res = await api.post<{ ok: boolean; message: string; http_status?: number }>(
+        `/projects/${id}/test-api-auth`,
+        {
+          token_endpoint: credForm.token_endpoint || null,
+          token_path: credForm.token_path || "token",
+          api_auth_header: credForm.api_auth_header,
+          api_auth_prefix: credForm.api_auth_prefix,
+          api_auth_header_value: credForm.api_auth_header_value || null,
+          username: credForm.username || null,
+          password: credForm.password || null,
+        },
+      );
+      setApiTest({ state: res.ok ? "ok" : "fail", detail: res.message });
+    } catch (err) {
+      setApiTest({ state: "fail", detail: err instanceof Error ? err.message : "API test failed" });
+    } finally {
+      setApiTestBusy(false);
     }
   }
 
@@ -490,6 +742,22 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function loadSuites() {
+    try {
+      setSuites(await api.get<Suite[]>(`/projects/${id}/suites`));
+    } catch {
+      setSuites([]);
+    }
+  }
+
+  async function loadPlanVersions() {
+    try {
+      setPlanVersions(await api.get<PlanVersion[]>(`/projects/${id}/suites/plan-versions`));
+    } catch {
+      setPlanVersions([]);
+    }
+  }
+
   async function loadRuns() {
     try {
       setRuns(await api.get<RunRow[]>(`/projects/${id}/test-runs`));
@@ -500,11 +768,101 @@ export default function ProjectDetailPage() {
 
   async function startRun() {
     setError(null);
+    const suite = suites.find((s) => s.id === runSuiteId);
+    const suiteTypesLocked = (suite?.test_types?.length ?? 0) > 0;
     try {
       const run = await api.post<{ id: string }>(`/projects/${id}/test-runs`, {
-        label: `Run ${new Date().toLocaleTimeString()}`,
+        label: runSuiteId
+          ? `${suite?.name ?? "Group"} · ${new Date().toLocaleTimeString()}`
+          : `Run ${new Date().toLocaleTimeString()}`,
         browsers: ["chromium"],
         max_retries: 1,
+        suite_id: runSuiteId || null,
+        test_plan_id: runPlanId || null,
+        // A group with declared types locks the choice; otherwise send the ad-hoc filter.
+        test_types:
+          runSuiteId && suiteTypesLocked ? suite?.test_types : runTestType ? [runTestType] : undefined,
+      });
+      await api.post(`/projects/${id}/test-runs/${run.id}/start`);
+      await loadRuns();
+      navigate(`/projects/${id}/runs/${run.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Run start failed");
+    }
+  }
+
+  // ---------- Saved groups (suites) of test cases ----------
+
+  async function createSuiteFromSelection() {
+    const name = newSuiteName.trim();
+    if (!name) {
+      setError("Give the group a name first.");
+      return;
+    }
+    if (selectedRefs.size === 0) {
+      setError("Select at least one test case to include in the group.");
+      return;
+    }
+    setError(null);
+    try {
+      await api.post<Suite>(`/projects/${id}/suites`, {
+        name,
+        refs: [...selectedRefs],
+        test_plan_id: suitePlanId || null,
+        test_types: suiteTestTypes,
+      });
+      setNewSuiteName("");
+      setSelectedRefs(new Set());
+      setSuiteTestTypes([]);
+      await loadSuites();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save group failed");
+    }
+  }
+
+  async function updateSuiteSelection(s: Suite) {
+    if (selectedRefs.size === 0) {
+      setError("Select the test cases to put in this group first.");
+      return;
+    }
+    setError(null);
+    try {
+      await api.patch<Suite>(`/projects/${id}/suites/${s.id}`, {
+        refs: [...selectedRefs],
+        test_plan_id: suitePlanId || null,
+        unset_test_plan: !suitePlanId,
+        test_types: suiteTestTypes,
+      });
+      setSelectedRefs(new Set());
+      setSuiteTestTypes([]);
+      setEditingSuiteId(null);
+      await loadSuites();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update group failed");
+    }
+  }
+
+  async function deleteSuite(s: Suite) {
+    if (!window.confirm(`Delete group "${s.name}"? (Test cases are not affected.)`)) return;
+    setError(null);
+    try {
+      await api.del(`/projects/${id}/suites/${s.id}`);
+      if (runSuiteId === s.id) setRunSuiteId("");
+      await loadSuites();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  async function runSuite(s: Suite) {
+    setError(null);
+    try {
+      const run = await api.post<{ id: string }>(`/projects/${id}/test-runs`, {
+        label: `${s.name} · ${new Date().toLocaleTimeString()}`,
+        browsers: ["chromium"],
+        max_retries: 1,
+        suite_id: s.id,
+        test_types: s.test_types?.length ? s.test_types : undefined,
       });
       await api.post(`/projects/${id}/test-runs/${run.id}/start`);
       await loadRuns();
@@ -516,12 +874,20 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     if (tab === "discovery") loadDiscovery();
-    if (tab === "apis" || tab === "test-plan" || tab === "test-cases") {
+    if (tab === "apis" || tab === "test-plan") {
       loadApis();
       if (tab === "test-plan") loadPlan();
-      if (tab === "test-cases") loadCases();
     }
-    if (tab === "executions") loadRuns();
+    if (tab === "test-cases" || tab === "groups") {
+      loadCases();
+      loadSuites();
+      loadPlanVersions();
+    }
+    if (tab === "executions") {
+      loadRuns();
+      loadSuites();
+      loadPlanVersions();
+    }
     if (tab === "quality") {
       loadA11y();
       loadPerf();
@@ -1143,6 +1509,125 @@ export default function ProjectDetailPage() {
     }
   }
 
+  /** CSV text → simple HTML table (escaped) for the inline viewer. */
+  function csvToHtmlTable(text: string): string {
+    const rows = text.replace(/\r\n/g, "\n").split("\n").filter((line) => line.trim().length > 0);
+    const esc = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const parseLine = (line: string) =>
+      // split on commas outside double quotes, then unquote
+      line
+        .match(/("[^"]*"|[^,]*)(,|$)/g)
+        ?.slice(0, -1)
+        .map((cell) => cell.replace(/,$/, "").replace(/^"|"$/g, "")) ?? [];
+    const body = rows
+      .map((line, i) => {
+        const cells = parseLine(line).map((c) => `<${i === 0 ? "th" : "td"}>${esc(c)}</${i === 0 ? "th" : "td"}>`);
+        return `<tr>${cells.join("")}</tr>`;
+      })
+      .join("");
+    return `<table>${body}</table>`;
+  }
+
+  async function openReportViewer(r: ReportRow) {
+    setError(null);
+    setViewBusy(true);
+    setViewError(null);
+    try {
+      const blob = await api.fetchBlob(`/projects/${id}/reports/${r.id}/download?inline=true`);
+      if (r.format === "csv") {
+        const text = await blob.text();
+        setViewReport({ id: r.id, kind: r.format, url: "", html: csvToHtmlTable(text) });
+      } else if (r.format === "json") {
+        const text = await blob.text();
+        let pretty = text;
+        try {
+          pretty = JSON.stringify(JSON.parse(text), null, 2);
+        } catch {
+          /* show raw text if not valid JSON */
+        }
+        setViewReport({ id: r.id, kind: r.format, url: "", html: `<pre>${pretty.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] ?? c))}</pre>` });
+      } else {
+        const url = URL.createObjectURL(blob);
+        setViewReport({ id: r.id, kind: r.format, url });
+      }
+    } catch (err) {
+      setViewError(err instanceof Error ? err.message : "Could not open report");
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  /** Open a completed report in a new browser tab (inline disposition). */
+  async function openReportInTab(r: ReportRow) {
+    setError(null);
+    setViewBusy(true);
+    try {
+      const blob = await api.fetchBlob(`/projects/${id}/reports/${r.id}/download?inline=true`);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener");
+      // Give the new tab a moment to load before revoking the object URL.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open report");
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  /** View a run's report in the browser: reuse the latest HTML report for the
+   *  run, or generate one on the fly, then open the inline viewer. */
+  async function viewRunReport(runId: string, runLabel: string) {
+    setError(null);
+    setViewBusy(true);
+    try {
+      let rows: ReportRow[] = [];
+      try {
+        rows = await api.get<ReportRow[]>(`/projects/${id}/reports`);
+      } catch {
+        rows = [];
+      }
+      const existing = rows.find(
+        (r) => r.test_run_id === runId && r.format === "html" && r.status === "completed",
+      );
+      let report = existing;
+      if (!report) {
+        const res = await api.post<{ report_id: string }>(`/projects/${id}/reports`, {
+          format: "html",
+          test_run_id: runId,
+        });
+        // Poll until the worker finishes (bounded ~2 min).
+        for (let i = 0; i < 80; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          const s = await api.get<ReportRow>(`/projects/${id}/reports/${res.report_id}`);
+          if (s.status === "completed") {
+            report = s;
+            break;
+          }
+          if (s.status === "failed") {
+            throw new Error("Report generation failed");
+          }
+        }
+        if (!report) throw new Error("Report is still generating — try again shortly");
+      }
+      const blob = await api.fetchBlob(
+        `/projects/${id}/reports/${report.id}/download?inline=true`,
+      );
+      const url = URL.createObjectURL(blob);
+      setViewReport({ id: report.id, kind: "html", url });
+    } catch (err) {
+      setError(`Report for "${runLabel}": ${err instanceof Error ? err.message : "could not open"}`);
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
+  function closeReportViewer() {
+    if (viewReport?.url) URL.revokeObjectURL(viewReport.url);
+    setViewReport(null);
+    setViewError(null);
+  }
+
   async function startPerfRun() {
     setError(null);
     setPerfState("running load test…");
@@ -1253,7 +1738,91 @@ export default function ProjectDetailPage() {
             <p className="text-sm text-slate-500 mb-4">
               Used to sign in before scans/tests and to authenticate API calls. Stored
               encrypted (Fernet), shown masked, never included in logs or reports.
+              Fill the login URL and press Auto-detect to have the selectors filled
+              for you, then Dry run to verify before saving. Targets protected by
+              bot challenges (e.g. Cloudflare human verification) can't be scanned
+              automatically — use a staging copy of the app instead.
             </p>
+
+            {/* ---- Saved configuration (visible once stored) ---- */}
+            {project.has_credentials && (
+              <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold text-slate-700">Saved configuration</h4>
+                  <button
+                    onClick={toggleReveal}
+                    disabled={revealBusy}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    {revealBusy ? "…" : showCreds ? "Hide values" : "Show values"}
+                  </button>
+                </div>
+                <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+                  {[
+                    ["Username", showCreds && revealData ? revealData.credentials.username : ((project.credentials?.username as string) ?? "")],
+                    ["Password", showCreds && revealData ? revealData.credentials.password : ((project.credentials?.password as string) ?? "••••••••")],
+                    ["Login URL", credForm.login_url],
+                    ["Username selector", credForm.username_selector],
+                    ["Password selector", credForm.password_selector],
+                    ["Submit selector", credForm.submit_selector],
+                    ["Success check", credForm.success_assert],
+                  ].map(([label, value]) =>
+                    value ? (
+                      <div key={label} className="flex gap-2 min-w-0">
+                        <dt className="shrink-0 text-slate-500">{label}:</dt>
+                        <dd className="truncate font-mono text-slate-800" title={value}>{value}</dd>
+                      </div>
+                    ) : null,
+                  )}
+                </dl>
+                {!showCreds && (
+                  <p className="mt-2 text-xs text-slate-400">Password/token values are masked — click “Show values” to decrypt (audited).</p>
+                )}
+              </div>
+            )}
+
+            {/* ---- Login dry run + saved-config sign-in test ---- */}
+            <div className="mb-4 rounded-lg border border-slate-200 p-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={runDryRun}
+                  disabled={dryBusy || !credForm.login_url.trim()}
+                  className="rounded-lg border border-brand-500 px-4 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50"
+                  title="Tries the login flow with the values currently in this form — nothing is saved"
+                >
+                  {dryBusy ? "Running…" : "Dry run login"}
+                </button>
+                <button
+                  onClick={runTestSignIn}
+                  disabled={testBusy || !project.has_credentials || !credForm.login_url}
+                  className="rounded-lg border border-slate-300 px-4 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  title="Tests the SAVED credentials and login flow (not unsaved edits)"
+                >
+                  {testBusy ? "Testing…" : "Test sign-in (saved)"}
+                </button>
+                <span className="text-xs text-slate-400">
+                  Dry run uses what's in the form right now and saves nothing; the saved test uses the stored config.
+                </span>
+              </div>
+              {dryRun.state && (
+                <p
+                  className={`mt-2 text-sm ${
+                    dryRun.state === "running" ? "text-slate-500" : dryRun.state === "ok" ? "text-emerald-600" : "text-red-600"
+                  }`}
+                >
+                  {dryRun.detail}
+                </p>
+              )}
+              {testSignIn.state && (
+                <p
+                  className={`mt-2 text-sm ${
+                    testSignIn.state === "running" ? "text-slate-500" : testSignIn.state === "ok" ? "text-emerald-600" : "text-red-600"
+                  }`}
+                >
+                  {testSignIn.detail}
+                </p>
+              )}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Username / email</label>
@@ -1278,12 +1847,22 @@ export default function ProjectDetailPage() {
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">
                   Login page URL <span className="text-slate-400">(browser sign-in before scans/tests)</span>
                 </label>
-                <input
-                  value={credForm.login_url}
-                  onChange={(e) => setCredForm({ ...credForm, login_url: e.target.value })}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                  placeholder="https://staging.example.com/login"
-                />
+                <div className="flex gap-2">
+                  <input
+                    value={credForm.login_url}
+                    onChange={(e) => setCredForm({ ...credForm, login_url: e.target.value })}
+                    className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    placeholder="https://staging.example.com/login"
+                  />
+                  <button
+                    onClick={autoDetect}
+                    disabled={detectBusy || !credForm.login_url.trim()}
+                    className="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    title="Opens the login page in a real browser and fills the selector fields for you"
+                  >
+                    {detectBusy ? "Detecting…" : "Auto-detect"}
+                  </button>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Username field selector</label>
@@ -1343,7 +1922,24 @@ export default function ProjectDetailPage() {
                     className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
                     placeholder={project.credentials?.api_token ? "•••••••• (saved)" : "paste a static token, or leave empty to fetch via token endpoint"}
                   />
+                  <button
+                    onClick={runApiTest}
+                    disabled={apiTestBusy}
+                    className="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    title="Fetches the token / builds the header and sends one request to your base URL"
+                  >
+                    {apiTestBusy ? "Testing…" : "Test API auth"}
+                  </button>
                 </div>
+                {apiTest.state && (
+                  <p
+                    className={`mt-2 text-sm ${
+                      apiTest.state === "running" ? "text-slate-500" : apiTest.state === "ok" ? "text-emerald-600" : "text-red-600"
+                    }`}
+                  >
+                    {apiTest.detail}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -1826,19 +2422,85 @@ export default function ProjectDetailPage() {
       {/* ---------- Executions ---------- */}
       {tab === "executions" && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6 flex items-center justify-between">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="font-semibold">Test runs ({runs.length})</h3>
               <p className="text-sm text-slate-500 mt-0.5">
                 Execute approved test cases with live progress
               </p>
             </div>
-            <button
-              onClick={startRun}
-              className="rounded-lg bg-brand-600 hover:bg-brand-500 px-4 py-2 text-sm font-semibold"
-            >
-              ▶ Start run
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Group to run</span>
+                <select
+                  value={runSuiteId}
+                  onChange={(e) => {
+                    setRunSuiteId(e.target.value);
+                    const pinned = suites.find((s) => s.id === e.target.value)?.test_plan_id;
+                    setRunPlanId(pinned ?? "");
+                    // A group with declared types locks the type filter — clear any stale ad-hoc pick.
+                    if ((suites.find((s) => s.id === e.target.value)?.test_types?.length ?? 0) > 0) {
+                      setRunTestType("");
+                    }
+                  }}
+                  className="w-56 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">All approved test cases</option>
+                  {suites.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.case_count})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Test plan</span>
+                <select
+                  value={runPlanId}
+                  disabled={!!runSuiteId && !!suites.find((s) => s.id === runSuiteId)?.test_plan_id}
+                  title={
+                    runSuiteId && suites.find((s) => s.id === runSuiteId)?.test_plan_id
+                      ? `This group is pinned to plan ${suites.find((s) => s.id === runSuiteId)?.test_plan_label}`
+                      : "Only run cases that belong to the chosen plan version"
+                  }
+                  className="w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  <option value="">Any test plan</option>
+                  {planVersions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      Test plan {p.label}{p.approved ? " ✓" : " (draft)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-500">
+                <span className="block mb-1">Type of test</span>
+                <select
+                  value={runTestType}
+                  onChange={(e) => setRunTestType(e.target.value)}
+                  disabled={!!runSuiteId && (suites.find((s) => s.id === runSuiteId)?.test_types?.length ?? 0) > 0}
+                  title={
+                    runSuiteId && (suites.find((s) => s.id === runSuiteId)?.test_types?.length ?? 0) > 0
+                      ? `This group is set to run: ${(suites.find((s) => s.id === runSuiteId)?.test_types ?? []).map((t) => testTypeLabel(t)).join(", ")}`
+                      : "Only run test cases of this type"
+                  }
+                  className="w-48 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  <option value="">All types</option>
+                  {TEST_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                onClick={startRun}
+                disabled={!project.authorization_confirmed}
+                title={project.authorization_confirmed ? undefined : "Confirm authorization first (Overview)"}
+                className="rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-4 py-2 text-sm font-semibold self-end"
+              >
+                ▶ Start run
+              </button>
+            </div>
           </div>
           {runs.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
@@ -1861,12 +2523,24 @@ export default function ProjectDetailPage() {
                       : "bg-slate-100 text-slate-500"}`}>
                       {r.status}
                     </span>
-                    <Link
-                      to={`/projects/${id}/runs/${r.id}`}
-                      className="text-sm text-brand-600 hover:text-brand-600"
-                    >
-                      View live →
-                    </Link>
+                    <div className="flex items-center gap-3">
+                      {r.status === "completed" && (
+                        <button
+                          onClick={() => viewRunReport(r.id, r.label)}
+                          disabled={viewBusy}
+                          title="Open the run's report right in the browser (HTML, generated on demand)"
+                          className="rounded bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+                        >
+                          {viewBusy ? "Preparing…" : "View report"}
+                        </button>
+                      )}
+                      <Link
+                        to={`/projects/${id}/runs/${r.id}`}
+                        className="text-sm text-brand-600 hover:text-brand-600"
+                      >
+                        View live →
+                      </Link>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1888,7 +2562,7 @@ export default function ProjectDetailPage() {
                 {cases.filter((c) => !c.approved).length} pending review
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={generateCases}
                 className="rounded-lg bg-brand-600 hover:bg-brand-500 px-4 py-2 text-sm font-semibold"
@@ -2011,6 +2685,236 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
                 </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {/* ---------- Groups: saved selections of test cases ---------- */}
+      {tab === "groups" && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">Saved groups ({suites.length})</h3>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Tick test cases below, name the group, pick the type of test it covers, and save it — then run the same set anytime from here or the Executions tab.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {editingSuiteId && (
+                  <span className="rounded bg-brand-50 px-2 py-1 text-xs text-brand-600">
+                    editing group — adjust the selection below, then Update
+                  </span>
+                )}
+                <input
+                  value={newSuiteName}
+                  onChange={(e) => setNewSuiteName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") createSuiteFromSelection();
+                  }}
+                  placeholder="New group name…"
+                  className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+                <label className="text-xs text-slate-500">
+                  <span className="sr-only">Test plan</span>
+                  <select
+                    value={suitePlanId}
+                    onChange={(e) => setSuitePlanId(e.target.value)}
+                    title="The group will only run test cases that belong to this plan version"
+                    className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">Any test plan</option>
+                    {planVersions.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        Test plan {p.label}{p.approved ? " ✓" : " (draft)"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={createSuiteFromSelection}
+                  disabled={selectedRefs.size === 0 || !newSuiteName.trim()}
+                  className="rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Save selection as group ({selectedRefs.size})
+                </button>
+              </div>
+            </div>
+
+            {/* Type of test this group covers — filters the run by test-case category */}
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Type of test to run on this group
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {TEST_TYPES.map((t) => {
+                  const active = suiteTestTypes.includes(t.value);
+                  return (
+                    <button
+                      key={t.value}
+                      type="button"
+                      onClick={() =>
+                        setSuiteTestTypes(
+                          active
+                            ? suiteTestTypes.filter((x) => x !== t.value)
+                            : [...suiteTestTypes, t.value],
+                        )
+                      }
+                      title={active ? `Remove ${t.label} from this group` : `Run ${t.label} tests in this group`}
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-brand-600 bg-brand-600 text-white"
+                          : "border-slate-300 bg-white text-slate-600 hover:border-brand-400 hover:text-brand-600"
+                      }`}
+                    >
+                      {active ? "✓ " : ""}{t.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-slate-400">
+                {suiteTestTypes.length === 0
+                  ? "No type selected — the group runs every type of test case it contains."
+                  : `The group will run only ${suiteTestTypes.map((v) => testTypeLabel(v)).join(", ")} test cases.`}
+              </p>
+            </div>
+            {suites.length > 0 && (
+              <div className="mt-4 space-y-2">
+                {suites.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-800">
+                        {s.name}{" "}
+                        <span className="ml-1 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">
+                          {s.case_count} cases
+                        </span>
+                        {s.test_plan_label && (
+                          <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">
+                            plan {s.test_plan_label}
+                          </span>
+                        )}
+                        {(s.test_types ?? []).map((t) => (
+                          <span
+                            key={t}
+                            className="ml-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600"
+                          >
+                            {testTypeLabel(t)}
+                          </span>
+                        ))}
+                      </p>
+                      <p className="text-xs text-slate-500 truncate" title={s.test_case_ids.join(", ")}>
+                        {s.test_case_ids.slice(0, 6).join(", ")}
+                        {s.test_case_ids.length > 6 ? ` +${s.test_case_ids.length - 6} more` : ""}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {editingSuiteId === s.id ? (
+                        <>
+                          <button
+                            onClick={() => updateSuiteSelection(s)}
+                            className="rounded bg-brand-600 hover:bg-brand-500 px-3 py-1.5 text-xs font-semibold text-white"
+                          >
+                            Update with selection ({selectedRefs.size})
+                          </button>
+                          <button
+                            onClick={() => setEditingSuiteId(null)}
+                            className="rounded bg-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-300"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => runSuite(s)}
+                            disabled={!project.authorization_confirmed}
+                            title={project.authorization_confirmed ? "Run the tests in this group" : "Confirm authorization first (Overview)"}
+                            className="rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold text-white"
+                          >
+                            ▶ Run group
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditingSuiteId(s.id);
+                              setSelectedRefs(new Set(s.test_case_ids));
+                              setSuitePlanId(s.test_plan_id ?? "");
+                              setSuiteTestTypes(s.test_types ?? []);
+                            }}
+                            className="rounded bg-slate-100 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-200"
+                          >
+                            Edit selection
+                          </button>
+                          <button
+                            onClick={() => deleteSuite(s)}
+                            className="rounded bg-red-50 px-3 py-1.5 text-xs text-red-600 hover:bg-red-100"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {cases.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 p-12 text-center text-slate-500">
+              No test cases yet — generate them in the Test Cases tab first.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {cases.map((c) => (
+                <label
+                  key={c.id}
+                  className="rounded-xl border border-slate-200 bg-white shadow-sm px-5 py-3 flex items-center gap-3 cursor-pointer hover:border-brand-300"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedRefs.has(c.ref)}
+                    onChange={(e) => {
+                      const next = new Set(selectedRefs);
+                      if (e.target.checked) next.add(c.ref);
+                      else next.delete(c.ref);
+                      setSelectedRefs(next);
+                    }}
+                    className="h-4 w-4 accent-brand-500"
+                  />
+                  <span className="font-mono text-xs text-brand-600">{c.ref}</span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] uppercase font-semibold ${
+                      PRIORITY_STYLES[c.priority] ?? PRIORITY_STYLES.low
+                    }`}
+                  >
+                    {c.priority}
+                  </span>
+                  {!c.approved && (
+                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600">
+                      pending review
+                    </span>
+                  )}
+                  {(() => {
+                    const pv = planVersions.find((p) => p.id === c.test_plan_id);
+                    return pv ? (
+                      <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">
+                        plan {pv.label}
+                      </span>
+                    ) : null;
+                  })()}
+                  {!c.enabled && (
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                      disabled
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-sm text-slate-800" title={c.scenario}>
+                    {c.scenario}
+                  </span>
+                </label>
               ))}
             </div>
           )}
@@ -3028,18 +3932,100 @@ export default function ProjectDetailPage() {
                       </td>
                       <td className="px-6 py-3 text-right">
                         {r.status === "completed" && (
-                          <button
-                            onClick={() => downloadReport(r.id)}
-                            className="rounded bg-slate-100 px-3 py-1.5 text-xs text-brand-600 hover:bg-slate-200"
-                          >
-                            Download
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() => openReportViewer(r)}
+                              disabled={viewBusy}
+                              title="Open the report right here in the browser"
+                              className="rounded bg-brand-600 hover:bg-brand-500 disabled:opacity-50 px-3 py-1.5 text-xs font-semibold text-white"
+                            >
+                              View
+                            </button>
+                            <button
+                              onClick={() => openReportInTab(r)}
+                              disabled={viewBusy}
+                              title="Open the report in a new browser tab"
+                              className="rounded bg-slate-100 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-200"
+                            >
+                              Open in browser
+                            </button>
+                            <button
+                              onClick={() => downloadReport(r.id)}
+                              className="rounded bg-slate-100 px-3 py-1.5 text-xs text-brand-600 hover:bg-slate-200"
+                            >
+                              Download
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+
+        </div>
+      )}
+
+      {/* ---- Inline report viewer (any format, rendered from any tab) ---- */}
+      {viewReport && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-slate-900/70 p-4 md:p-8">
+          <div className="flex items-center justify-between rounded-t-xl bg-white px-5 py-3">
+            <div className="flex items-center gap-3">
+              <h3 className="font-semibold">Report preview</h3>
+              <span className="rounded bg-brand-50 px-2 py-0.5 text-xs font-mono uppercase text-brand-600">
+                {viewReport.kind}
+              </span>
+              {viewError && <span className="text-xs text-red-600">{viewError}</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => downloadReport(viewReport.id)}
+                className="rounded bg-slate-100 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-200"
+              >
+                Download
+              </button>
+              <button
+                onClick={closeReportViewer}
+                className="rounded bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto rounded-b-xl bg-white">
+            {viewReport.html ? (
+              // CSV table / pretty-printed JSON — escaped before insertion
+              <div
+                className="report-inline-view p-5"
+                dangerouslySetInnerHTML={{ __html: viewReport.html }}
+              />
+            ) : viewReport.kind === "pdf" ? (
+              <iframe
+                src={viewReport.url}
+                title="Report preview"
+                className="h-full w-full"
+              />
+            ) : viewReport.kind === "xlsx" ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+                <p className="text-sm text-slate-600">
+                  Excel reports can't be previewed in the browser — download to open in Excel, or generate an HTML/PDF report to view here.
+                </p>
+                <button
+                  onClick={() => downloadReport(viewReport.id)}
+                  className="rounded-lg bg-brand-600 hover:bg-brand-500 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Download XLSX
+                </button>
+              </div>
+            ) : (
+              <iframe
+                src={viewReport.url}
+                title="Report preview"
+                sandbox="allow-same-origin"
+                className="h-full w-full"
+              />
             )}
           </div>
         </div>

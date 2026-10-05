@@ -304,6 +304,15 @@ class TestSuite(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))  # smoke | regression | custom
+    # Plan pin: nullable; FK is ON DELETE SET NULL (migration 0008) so deleting
+    # a plan version clears the pin instead of blocking.
+    test_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("test_plans.id", ondelete="SET NULL"), nullable=True
+    )
+    # Type of test the group targets (functional, api, security, ...). Empty =
+    # all types; a non-empty list also filters the group's run selection by
+    # TestCase.category (see _select_cases in api/testruns.py).
+    test_types: Mapped[list] = mapped_column(JSON, default=list)
     test_case_ids: Mapped[list] = mapped_column(JSON, default=list)
 
 

@@ -15,6 +15,7 @@ from app.models import (
     Project,
     Role,
     TestCase,
+    TestPlan,
     TestSuite,
     User,
 )
@@ -52,6 +53,7 @@ def _serialize(tc: TestCase) -> dict:
         "steps": tc.steps,
         "expected_result": tc.expected_result,
         "kind": tc.kind,
+        "test_plan_id": tc.test_plan_id,
         "enabled": tc.enabled,
         "approved": tc.approved,
         "capture_on_pass": tc.capture_on_pass,
@@ -86,6 +88,13 @@ def generate(
     db.execute(sa.delete(TestCase).where(TestCase.project_id == project.id))
     db.flush()
 
+    # Stamp cases with the latest plan version so groups can pin to a plan
+    latest_plan = db.execute(
+        sa.select(TestPlan)
+        .where(TestPlan.project_id == project.id)
+        .order_by(TestPlan.version.desc())
+    ).scalars().first()
+
     existing_refs: set[str] = set()
     for c in cases:
         ref = c["ref"]
@@ -105,14 +114,25 @@ def generate(
                 steps=c.get("steps", []),
                 expected_result=c.get("expected_result", ""),
                 kind=c.get("kind", "browser"),
+                test_plan_id=latest_plan.id if latest_plan else None,
                 approved=False,  # spec §8: nothing auto-executes before review
             )
         )
 
     suites = tag_suites(cases)
     for name, refs in suites.items():
-        suite = TestSuite(project_id=project.id, name=name, test_case_ids=refs)
-        db.add(suite)
+        suite = db.execute(
+            sa.select(TestSuite).where(TestSuite.project_id == project.id, TestSuite.name == name)
+        ).scalar_one_or_none()
+        if suite is None:
+            db.add(TestSuite(project_id=project.id, name=name, test_case_ids=refs))
+        else:
+            # User-created suites with the same name keep their custom selection;
+            # auto-tagged ones refresh to the new refs.
+            if not suite.test_case_ids or set(suite.test_case_ids or []).issubset(
+                {c["ref"] for c in cases}
+            ):
+                suite.test_case_ids = refs
 
     db.commit()
     audit_record("testcases.generate", user.id, "project", project.id, {"count": len(cases)})
