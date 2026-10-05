@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/candidate.json",
+    "sha256": "2b9ceb72d9fa2a12fad3fb9d31d1a4e5fc859f1b816b1b024df18e8f8640ec46",
+    "bytes": 7063
+  },
+  "artifact": {
+    "path": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.html",
+    "sha256": "c66331f28e2a9a5496b1ce4a3416eee483347132d4d66f693beabef6294111d5",
+    "bytes": 775816
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.finalize.json",
+    "summaryReceipt": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.finalize-summary.json",
+    "browserCheckReceipt": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.0.1",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-05T09:22:59.304Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 6976,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 5,
+      "routesOverSuggestedStretch": 6
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "users-to-nginx",
+            "from": "users",
+            "to": "nginx",
+            "label": "HTTP :8080",
+            "collectionIndex": 0,
+            "artifactIndex": 1
+          },
+          "bends": 4,
+          "stretch": 1.516
+        },
+        {
+          "relationship": {
+            "id": "nginx-to-api",
+            "from": "nginx",
+            "to": "api",
+            "label": "/api/ · /ws/",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "bends": 4,
+          "stretch": 1.39
+        },
+        {
+          "relationship": {
+            "id": "api-to-redis",
+            "from": "api",
+            "to": "redis",
+            "label": "publish",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "bends": 4,
+          "stretch": 1.516
+        },
+        {
+          "relationship": {
+            "id": "redis-to-bw",
+            "from": "redis",
+            "to": "bw",
+            "label": "browser",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "bends": 4,
+          "stretch": 1.444
+        },
+        {
+          "relationship": {
+            "id": "bw-to-demo",
+            "from": "bw",
+            "to": "demo",
+            "label": "Playwright",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "bends": 4,
+          "stretch": 1.432
+        },
+        {
+          "relationship": {
+            "id": "bw-to-postgres",
+            "from": "bw",
+            "to": "postgres",
+            "label": "executions SQL",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 2,
+          "stretch": 1.563
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "users → nginx needs 4 bends: move node users or nginx so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "nginx → api needs 4 bends: move node nginx or api so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "api → redis needs 4 bends: move node api or redis so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "redis → bw needs 4 bends: move node redis or bw so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "bw → demo needs 4 bends: move node bw or demo so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "bw → postgres needs 2 bends: move node bw or postgres so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

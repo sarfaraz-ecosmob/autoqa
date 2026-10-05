@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AutoQA Platform — Runtime Architecture",
+    "output": ".archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:sarfaraz-ecosmob/autoqa.git",
+      "revision": "ef75bfef8527a4b49222780a76b14904bb1db3b0",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    { "id": "users", "type": "external", "label": "QA Engineers", "sublabel": "browser", "pos": [40, 250], "size": [120, 60] },
+    { "id": "nginx", "type": "cloud", "label": "Nginx", "sublabel": "edge · :8080 → 80", "pos": [220, 250], "size": [140, 64], "sources": [ { "path": "docker-compose.yml", "line": 3, "end_line": 15 }, { "path": "docker/nginx/nginx.conf", "line": 20, "end_line": 31 } ] },
+    { "id": "frontend", "type": "frontend", "label": "Web SPA", "sublabel": "React + Vite", "pos": [215, 90], "size": [150, 64], "sources": [ { "path": "docker-compose.yml", "line": 18, "end_line": 21 }, { "path": "frontend/src/api/client.ts", "line": 1, "end_line": 3 } ] },
+    { "id": "llm", "type": "external", "label": "LLM Provider", "sublabel": "OpenRouter · OpenAI-compatible", "pos": [435, 90], "size": [170, 64], "sources": [ { "path": "backend/app/ai/__init__.py", "line": 1, "end_line": 23 } ] },
+    { "id": "api", "type": "backend", "label": "Backend API", "sublabel": "FastAPI · :8000", "pos": [440, 250], "size": [160, 68], "sources": [ { "path": "backend/app/main.py", "line": 28, "end_line": 30 }, { "path": "backend/app/main.py", "line": 87, "end_line": 90 }, { "path": "backend/app/api/scans.py", "line": 46, "end_line": 52 } ] },
+    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "broker + results :6379", "pos": [660, 250], "size": [150, 64], "sources": [ { "path": "backend/app/tasks.py", "line": 9, "end_line": 13 }, { "path": "docker-compose.yml", "line": 72, "end_line": 80 } ] },
+    { "id": "bw", "type": "backend", "label": "Browser Worker", "sublabel": "Celery · browser queue", "tag": "Playwright", "pos": [880, 250], "size": [180, 68], "sources": [ { "path": "backend/app/worker_exec.py", "line": 23, "end_line": 39 }, { "path": "backend/app/tasks.py", "line": 24, "end_line": 25 }, { "path": "backend/app/execution/browser.py", "line": 43, "end_line": 56 } ] },
+    { "id": "demo", "type": "external", "label": "Target App", "sublabel": "system under test :9000", "pos": [1130, 250], "size": [140, 60], "sources": [ { "path": "docker-compose.yml", "line": 183, "end_line": 188 } ] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL 16", "sublabel": ":5432 · SQLAlchemy", "pos": [400, 430], "size": [170, 64], "sources": [ { "path": "backend/app/db.py", "line": 11, "end_line": 13 }, { "path": "docker-compose.yml", "line": 56, "end_line": 70 } ] },
+    { "id": "worker", "type": "backend", "label": "Task Worker", "sublabel": "Celery · autoqa + reports", "pos": [675, 430], "size": [150, 64], "sources": [ { "path": "backend/app/worker_tasks.py", "line": 32, "end_line": 33 }, { "path": "backend/app/worker_reports.py", "line": 14 }, { "path": "backend/app/worker_quality.py", "line": 15, "end_line": 16 } ] },
+    { "id": "secw", "type": "backend", "label": "Security Worker", "sublabel": "security queue", "tag": "isolated", "pos": [845, 430], "size": [110, 64], "sources": [ { "path": "backend/app/worker_security.py", "line": 12, "end_line": 13 } ] },
+    { "id": "minio", "type": "cloud", "label": "MinIO", "sublabel": "artifacts · S3 API :9000", "pos": [640, 590], "size": [160, 56], "sources": [ { "path": "backend/app/storage.py", "line": 40, "end_line": 50 }, { "path": "backend/app/worker_reports.py", "line": 46 } ] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "AutoQA stack — docker compose", "wraps": ["nginx", "frontend", "api", "redis", "bw", "demo", "postgres", "worker", "secw", "minio"] },
+    { "kind": "security-group", "label": "worker-net — no default egress (SSRF control)", "wraps": ["bw", "secw", "demo"], "pad": 8 }
+  ],
+  "connections": [
+    { "id": "users-to-nginx", "from": "users", "to": "nginx", "label": "HTTP :8080", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "nginx-to-frontend", "from": "nginx", "to": "frontend", "label": "serve SPA", "fromSide": "top", "toSide": "bottom" },
+    { "id": "nginx-to-api", "from": "nginx", "to": "api", "label": "/api/ · /ws/", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "api-to-postgres", "from": "api", "to": "postgres", "label": "SQL (SQLAlchemy)", "fromSide": "bottom", "toSide": "top" },
+    { "id": "api-to-redis", "from": "api", "to": "redis", "label": "publish", "variant": "dashed", "fromSide": "right", "toSide": "left" },
+    { "id": "api-to-llm", "from": "api", "to": "llm", "label": "chat completions (httpx)", "fromSide": "top", "toSide": "bottom" },
+    { "id": "redis-to-worker", "from": "redis", "to": "worker", "label": "autoqa/reports", "fromSide": "bottom", "toSide": "top" },
+    { "id": "redis-to-bw", "from": "redis", "to": "bw", "label": "browser", "fromSide": "right", "toSide": "left" },
+    { "id": "bw-to-demo", "from": "bw", "to": "demo", "label": "Playwright", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "bw-to-postgres", "from": "bw", "to": "postgres", "label": "executions SQL", "fromSide": "bottom", "toSide": "bottom", "via": [[970, 680], [485, 680]] },
+    { "id": "redis-to-secw", "from": "redis", "to": "secw", "label": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "worker-to-postgres", "from": "worker", "to": "postgres", "label": "SQL results", "fromSide": "left", "toSide": "right" },
+    { "id": "worker-to-minio", "from": "worker", "to": "minio", "label": "artifacts (S3)", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Edge & UI", "items": ["nginx serves the SPA and proxies /api/ plus /ws/ (WebSocket) to FastAPI", "SPA keeps JWT access/refresh tokens in localStorage"] },
+    { "dot": "violet", "title": "Async pipeline", "items": ["Celery queues: browser (Playwright runs, a11y, perf) · autoqa/reports · security", "Celery Beat (scheduler service) ticks every 60s to dispatch due schedules", "Tasks published by name; results land in the Redis result backend"] },
+    { "dot": "amber", "title": "Data", "items": ["PostgreSQL is the primary store through one SQLAlchemy engine + SessionLocal", "MinIO keeps screenshots and report artifacts via the boto3 S3 API", "Redis doubles as progress pub/sub (scan:<id> channels)"] },
+    { "dot": "rose", "title": "Isolation", "items": ["worker-net has no default internet egress — SSRF control", "Browser & security workers reach only AUTOQA_INTERNAL_TARGETS (demo-app)"] },
+    { "dot": "slate", "title": "Also in the stack", "items": ["Security worker persists findings through the same SQLAlchemy session factory", "Playwright codegen recorder output feeds Tier-1 test imports"] }
+  ]
+}

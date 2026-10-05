@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "0a5d0f76-a6b9-456d-82d1-bb992baeec11",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/candidate.json",
+  "output": "/home/sarfaraz/Documents/Training/AutoQA/.archify/architecture-autoqa-runtime-20261005-1335/autoqa-runtime.html",
+  "specification": {
+    "sha256": "2b9ceb72d9fa2a12fad3fb9d31d1a4e5fc859f1b816b1b024df18e8f8640ec46",
+    "bytes": 7063
+  },
+  "artifact": {
+    "sha256": "c66331f28e2a9a5496b1ce4a3416eee483347132d4d66f693beabef6294111d5",
+    "bytes": 775816
+  }
+}
