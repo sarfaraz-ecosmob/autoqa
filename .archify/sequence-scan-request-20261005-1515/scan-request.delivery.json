@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "c4e73acc-5651-48cc-9966-7fad96360186",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/home/sarfaraz/Documents/Training/AutoQA/.archify/sequence-scan-request-20261005-1515/candidate.json",
+  "output": "/home/sarfaraz/Documents/Training/AutoQA/.archify/sequence-scan-request-20261005-1515/scan-request.html",
+  "specification": {
+    "sha256": "9ec3202d4faec6877975559973bba4f2ec1d7d8b9285df21b1032d19404cd58c",
+    "bytes": 5994
+  },
+  "artifact": {
+    "sha256": "acb3aacffdf027d9f41b7e223dbb9b1b2ab3012a802cc8b510225acc210c3498",
+    "bytes": 765061
+  }
+}

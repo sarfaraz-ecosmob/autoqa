@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Scan Request Sequence — POST /api/scan",
+    "output": ".archify/sequence-scan-request-20261005-1515/scan-request.html",
+    "viewBox": [1080, 696],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:sarfaraz-ecosmob/autoqa.git",
+      "revision": "ef75bfef8527a4b49222780a76b14904bb1db3b0",
+      "link_mode": "local-only"
+    }
+  },
+  "participants": [
+    { "id": "spa", "type": "frontend", "label": "Web SPA", "sublabel": "React + Vite", "sources": [ { "path": "frontend/src/api/client.ts", "line": 1, "end_line": 3 }, { "path": "docker-compose.yml", "line": 18, "end_line": 21 } ] },
+    { "id": "api", "type": "backend", "label": "FastAPI", "sublabel": "/api/scan endpoints", "sources": [ { "path": "backend/app/api/scans.py", "line": 26, "end_line": 64 }, { "path": "backend/app/api/scans.py", "line": 66, "end_line": 77 }, { "path": "backend/app/api/scans.py", "line": 80, "end_line": 95 } ] },
+    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "broker · pub/sub · results", "sources": [ { "path": "backend/app/tasks.py", "line": 9, "end_line": 13 }, { "path": "backend/app/tasks.py", "line": 23, "end_line": 32 }, { "path": "backend/app/worker_tasks.py", "line": 17, "end_line": 24 } ] },
+    { "id": "worker", "type": "backend", "label": "Browser Worker", "sublabel": "Celery · queue=browser", "sources": [ { "path": "backend/app/worker_tasks.py", "line": 32, "end_line": 63 }, { "path": "docker-compose.yml", "line": 130, "end_line": 158 }, { "path": "backend/app/tasks.py", "line": 24, "end_line": 25 } ] },
+    { "id": "demo", "type": "external", "label": "Target App", "sublabel": "base_url under test", "sources": [ { "path": "docker-compose.yml", "line": 183, "end_line": 188 } ] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL", "sublabel": ":5432 · SQLAlchemy", "sources": [ { "path": "backend/app/db.py", "line": 11, "end_line": 13 }, { "path": "backend/app/worker_tasks.py", "line": 35, "end_line": 81 } ] }
+  ],
+  "segments": [
+    { "from": 150, "to": 258, "label": "Dispatch & watch" },
+    { "from": 260, "to": 398, "label": "Crawl" },
+    { "from": 400, "to": 480, "label": "Progress & persist" },
+    { "from": 482, "to": 596, "label": "Result & status" }
+  ],
+  "messages": [
+    { "id": "post-scan", "from": "spa", "to": "api", "y": 160, "label": "POST /api/scan (JWT)", "variant": "emphasis", "note": "409 unless authorization confirmed · validates target URL · audit scan.start" },
+    { "id": "send-task", "from": "api", "to": "redis", "y": 188, "label": "send_task app.run_scan → browser queue", "variant": "dashed" },
+    { "id": "accepted", "from": "api", "to": "spa", "y": 216, "label": "200 {scan_id, started}", "variant": "return" },
+    { "id": "sse-open", "from": "spa", "to": "api", "y": 244, "label": "GET /api/scan/stream (SSE)" },
+    { "id": "deliver", "from": "redis", "to": "worker", "y": 272, "label": "deliver run_scan · queue=browser", "variant": "dashed" },
+    { "id": "load-project", "from": "worker", "to": "postgres", "y": 300, "label": "load project + credentials (SQL)" },
+    { "id": "crawl", "from": "worker", "to": "demo", "y": 328, "label": "Playwright crawls base_url", "variant": "emphasis" },
+    { "id": "crawl-result", "from": "demo", "to": "worker", "y": 356, "label": "pages + DOM", "variant": "return" },
+    { "id": "publish-progress", "from": "worker", "to": "redis", "y": 384, "label": "PUBLISH progress {pages_found}", "variant": "dashed" },
+    { "id": "sse-forward", "from": "api", "to": "spa", "y": 412, "label": "SSE progress events", "variant": "return" },
+    { "id": "persist-pages", "from": "worker", "to": "postgres", "y": 440, "label": "persist Page rows" },
+    { "id": "task-result", "from": "worker", "to": "redis", "y": 468, "label": "task result", "variant": "dashed" },
+    { "id": "poll-status", "from": "spa", "to": "api", "y": 496, "label": "GET /api/scan/status" },
+    { "id": "async-result", "from": "api", "to": "redis", "y": 524, "label": "AsyncResult(scan_id)" },
+    { "id": "state", "from": "redis", "to": "api", "y": 552, "label": "state", "variant": "return" },
+    { "id": "status-response", "from": "api", "to": "spa", "y": 580, "label": "{scan_id, state}", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "spa", "from": 155, "to": 586, "type": "frontend" },
+    { "participant": "api", "from": 160, "to": 586, "type": "backend" },
+    { "participant": "redis", "from": 182, "to": 194, "type": "messagebus" },
+    { "participant": "redis", "from": 266, "to": 278, "type": "messagebus" },
+    { "participant": "redis", "from": 378, "to": 390, "type": "messagebus" },
+    { "participant": "redis", "from": 462, "to": 474, "type": "messagebus" },
+    { "participant": "redis", "from": 518, "to": 558, "type": "messagebus" },
+    { "participant": "worker", "from": 266, "to": 474, "type": "backend" },
+    { "participant": "postgres", "from": 294, "to": 308, "type": "database" },
+    { "participant": "postgres", "from": 434, "to": 448, "type": "database" },
+    { "participant": "demo", "from": 322, "to": 362, "type": "external" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Dispatch & guard", "items": ["POST /api/scan requires authorization_confirmed — otherwise 409", "Target URL validated before dispatch; every start audited (scan.start)"] },
+    { "dot": "violet", "title": "Async crawl", "items": ["Task routed to the browser queue (Playwright image) by name", "Crawler runs on asyncio with optional saved auth flow + credentials", "Discovered pages persist as Page rows keyed by project"] },
+    { "dot": "rose", "title": "Progress & status", "items": ["Worker publishes progress to Redis channel scan:{id}", "SSE scan_stream subscribes to that channel; status polling is the other path", "Final state is read through AsyncResult on the result backend"] }
+  ]
+}
