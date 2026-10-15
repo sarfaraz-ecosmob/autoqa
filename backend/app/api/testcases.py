@@ -10,14 +10,19 @@ from app.db import get_db
 from app.generation.testcases import generate_cases, llm_refine_cases, tag_suites
 from app.models import (
     ApiEndpoint,
+    Defect,
     Page,
     Priority,
     Project,
+    RequirementLink,
     Role,
     TestCase,
+    TestExecution,
     TestPlan,
     TestSuite,
     User,
+    VisualBaseline,
+    VisualCheck,
 )
 
 router = APIRouter(prefix="/api/projects/{project_id}/test-cases", tags=["test-cases"])
@@ -84,7 +89,17 @@ def generate(
     if not cases:
         raise HTTPException(status_code=409, detail="No test cases could be generated from discovery data")
 
-    # Replace existing cases for a clean regeneration (refs are re-issued)
+    # Replace existing cases for a clean regeneration (refs are re-issued).
+    # Children must go first: test_executions, visual_baselines, visual_checks
+    # and requirement_links FK to test_cases, and defects FK to test_executions
+    # — none of them cascade (same order as _delete_project_cascade).
+    case_ids = sa.select(TestCase.id).where(TestCase.project_id == project.id)
+    exec_ids = sa.select(TestExecution.id).where(TestExecution.test_case_id.in_(case_ids))
+    db.execute(sa.delete(Defect).where(Defect.execution_id.in_(exec_ids)))
+    db.execute(sa.delete(TestExecution).where(TestExecution.test_case_id.in_(case_ids)))
+    db.execute(sa.delete(VisualCheck).where(VisualCheck.test_case_id.in_(case_ids)))
+    db.execute(sa.delete(VisualBaseline).where(VisualBaseline.test_case_id.in_(case_ids)))
+    db.execute(sa.delete(RequirementLink).where(RequirementLink.test_case_id.in_(case_ids)))
     db.execute(sa.delete(TestCase).where(TestCase.project_id == project.id))
     db.flush()
 

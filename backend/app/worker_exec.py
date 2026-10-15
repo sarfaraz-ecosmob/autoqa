@@ -82,25 +82,6 @@ def execute_test(
             from app.execution.browser import BrowserExecutor
 
             shot_key = f"executions/{execution_id}/screenshot-attempt{attempt}.png"
-            # Visual checks (Tier-1): capture on pass when this case × browser
-            # has a baseline (or the case opts in via capture_on_pass)
-            visual_on = False
-            try:
-                from app.models import VisualBaseline
-
-                visual_on = (
-                    db.execute(
-                        sa.select(sa.func.count())
-                        .select_from(VisualBaseline)
-                        .where(
-                            VisualBaseline.test_case_id == exec_row.test_case_id,
-                            VisualBaseline.browser == browser,
-                        )
-                    ).scalar_one()
-                    > 0
-                )
-            except Exception:
-                visual_on = False
             result = BrowserExecutor(
                 browser_name=browser,
                 variables=resolved_vars,
@@ -109,7 +90,9 @@ def execute_test(
             ).run(
                 case.get("steps", []),
                 screenshot_key=shot_key,
-                capture_on_pass=bool(case.get("capture_on_pass", False)) or visual_on,
+                # Every browser execution stores a screenshot (pass or fail) so
+                # the run's evidence view always has visual proof (spec §12/§19).
+                capture_on_pass=True,
             )
 
         duration_ms = int((time_end() - started) * 1000)
