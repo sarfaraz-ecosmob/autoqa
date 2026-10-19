@@ -7,9 +7,12 @@ Providers:
   - "openrouter"  → OpenRouter (https://openrouter.ai/api/v1) — hundreds of
                     models behind one key; OpenAI-compatible chat completions.
 
-Configuration precedence (§22): the UI-managed singleton (llm_settings row,
-API key Fernet-encrypted at rest) overrides environment variables when set.
-.env remains the bootstrap fallback so fresh installs work without the UI.
+Configuration precedence (§22): an API key present in the environment
+(.env → container env, see docker-compose.yml) is AUTHORITATIVE — provider,
+model and base_url come from env too and the UI-managed key is ignored, so
+the key can be rotated by editing .env and recreating the containers. With no
+env key, the UI-managed singleton (llm_settings row, Fernet-encrypted at rest)
+wins, then env, then provider "none" (heuristics).
 
 Auto model selection (OpenRouter): with model="auto" (the default), the best
 FREE model is detected automatically from OpenRouter's /models catalog —
@@ -81,16 +84,32 @@ def _db_api_key() -> str:
 
 
 def _effective_config() -> dict[str, str]:
-    """Merge env config with UI-managed overrides (DB wins when set)."""
+    """Merge env config with UI-managed overrides.
+
+    Precedence: env key present → env wins outright (provider/model/base_url
+    and the key all come from env; the UI-managed key is ignored). No env key
+    → the UI-managed singleton (database) wins, falling back to env, then to
+    provider "none" (deterministic heuristics, no network).
+    """
     s = get_settings()
+    env_key = (s.llm_api_key or "").strip()
     ov = _db_overrides()
 
+    if env_key:
+        # .env is the single source of truth — nothing from the DB is used.
+        return {
+            "provider": (s.llm_provider or "none").lower().strip(),
+            "model": s.llm_model or "auto",
+            "base_url": s.llm_base_url or "",
+            "api_key": env_key,
+        }
+
     provider = ov.get("provider") or (s.llm_provider or "none")
-    if not ov.get("has_db_key") and ov.get("provider") in ("", "none") and not (s.llm_api_key or "").strip():
+    if not ov.get("has_db_key") and ov.get("provider") in ("", "none"):
         provider = "none"
     model = ov.get("model") or (s.llm_model or "auto")
     base_url = ov.get("base_url") or (s.llm_base_url or "")
-    api_key = _db_api_key() if ov.get("has_db_key") else (s.llm_api_key or "")
+    api_key = _db_api_key() if ov.get("has_db_key") else ""
     return {"provider": (provider or "none").lower().strip(), "model": model, "base_url": base_url, "api_key": api_key}
 
 

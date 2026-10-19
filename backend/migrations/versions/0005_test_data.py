@@ -15,8 +15,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "test_environments",
+    # Idempotency guards: 0001 (create_all from the live models) already
+    # created these tables on a fresh database.
+    insp = sa.inspect(op.get_bind())
+
+    if not insp.has_table("test_environments"):
+        op.create_table(
+            "test_environments",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), index=True, nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
@@ -24,9 +29,11 @@ def upgrade() -> None:
         sa.Column("variables", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
-    op.create_table(
-        "test_datasets",
+        )
+
+    if not insp.has_table("test_datasets"):
+        op.create_table(
+            "test_datasets",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), index=True, nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
@@ -44,7 +51,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
+        )
 
 
 def downgrade() -> None:

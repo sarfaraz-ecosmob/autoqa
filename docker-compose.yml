@@ -28,6 +28,14 @@ services:
     # no manual restart. Data/config/credential changes never needed it.
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
+      # LLM key/provider: read from the project .env only (env wins over the
+      # UI-managed key, see app/ai._effective_config). Rotate by editing .env
+      # and `docker compose up -d`.
+      AUTOQA_LLM_PROVIDER: ${AUTOQA_LLM_PROVIDER:-none}
+      AUTOQA_LLM_API_KEY: ${AUTOQA_LLM_API_KEY:-}
+      AUTOQA_LLM_MODEL: ${AUTOQA_LLM_MODEL:-auto}
+      AUTOQA_LLM_BASE_URL: ${AUTOQA_LLM_BASE_URL:-}
+      AUTOQA_LLM_HTTP_REFERER: ${AUTOQA_LLM_HTTP_REFERER:-}
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
@@ -108,6 +116,11 @@ services:
     # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
     command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=autoqa,reports,celery --hostname=worker@%h
     environment:
+      AUTOQA_LLM_PROVIDER: ${AUTOQA_LLM_PROVIDER:-none}
+      AUTOQA_LLM_API_KEY: ${AUTOQA_LLM_API_KEY:-}
+      AUTOQA_LLM_MODEL: ${AUTOQA_LLM_MODEL:-auto}
+      AUTOQA_LLM_BASE_URL: ${AUTOQA_LLM_BASE_URL:-}
+      AUTOQA_LLM_HTTP_REFERER: ${AUTOQA_LLM_HTTP_REFERER:-}
       AUTOQA_CODE_RELOAD: "1"
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
@@ -142,6 +155,11 @@ services:
     # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
     command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=2 --queues=browser --hostname=browser-worker@%h
     environment:
+      AUTOQA_LLM_PROVIDER: ${AUTOQA_LLM_PROVIDER:-none}
+      AUTOQA_LLM_API_KEY: ${AUTOQA_LLM_API_KEY:-}
+      AUTOQA_LLM_MODEL: ${AUTOQA_LLM_MODEL:-auto}
+      AUTOQA_LLM_BASE_URL: ${AUTOQA_LLM_BASE_URL:-}
+      AUTOQA_LLM_HTTP_REFERER: ${AUTOQA_LLM_HTTP_REFERER:-}
       AUTOQA_CODE_RELOAD: "1"
       AUTOQA_ENVIRONMENT: ${AUTOQA_ENVIRONMENT:-development}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
@@ -171,6 +189,11 @@ services:
     build: ./backend
     command: celery -A app.tasks.celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
     environment:
+      AUTOQA_LLM_PROVIDER: ${AUTOQA_LLM_PROVIDER:-none}
+      AUTOQA_LLM_API_KEY: ${AUTOQA_LLM_API_KEY:-}
+      AUTOQA_LLM_MODEL: ${AUTOQA_LLM_MODEL:-auto}
+      AUTOQA_LLM_BASE_URL: ${AUTOQA_LLM_BASE_URL:-}
+      AUTOQA_LLM_HTTP_REFERER: ${AUTOQA_LLM_HTTP_REFERER:-}
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}
     volumes:
@@ -204,6 +227,11 @@ services:
     # (Celery has no built-in reload). No-op unless AUTOQA_CODE_RELOAD=1.
     command: python /app/scripts/dev_autoreload.py celery -A app.tasks.celery_app worker --loglevel=INFO --concurrency=1 --queues=security --hostname=security-worker@%h --schedule=/tmp/celerybeat-schedule
     environment:
+      AUTOQA_LLM_PROVIDER: ${AUTOQA_LLM_PROVIDER:-none}
+      AUTOQA_LLM_API_KEY: ${AUTOQA_LLM_API_KEY:-}
+      AUTOQA_LLM_MODEL: ${AUTOQA_LLM_MODEL:-auto}
+      AUTOQA_LLM_BASE_URL: ${AUTOQA_LLM_BASE_URL:-}
+      AUTOQA_LLM_HTTP_REFERER: ${AUTOQA_LLM_HTTP_REFERER:-}
       AUTOQA_CODE_RELOAD: "1"
       AUTOQA_SECRET_KEY: ${AUTOQA_SECRET_KEY:-dev_only_change_me}
       AUTOQA_REDIS_URL: ${AUTOQA_REDIS_URL:-redis://redis:6379/0}

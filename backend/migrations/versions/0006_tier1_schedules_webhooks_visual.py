@@ -15,8 +15,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "test_schedules",
+    # Idempotency guards: 0001 (create_all from the live models) already
+    # created these tables on a fresh database.
+    insp = sa.inspect(op.get_bind())
+
+    if not insp.has_table("test_schedules"):
+        op.create_table(
+            "test_schedules",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False, index=True),
         sa.Column("name", sa.String(200), nullable=False),
@@ -34,10 +39,11 @@ def upgrade() -> None:
         sa.Column("next_run_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
+        )
 
-    op.create_table(
-        "webhooks",
+    if not insp.has_table("webhooks"):
+        op.create_table(
+            "webhooks",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False, index=True),
         sa.Column("name", sa.String(200), nullable=False),
@@ -49,10 +55,11 @@ def upgrade() -> None:
         sa.Column("last_delivery_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
+        )
 
-    op.create_table(
-        "visual_baselines",
+    if not insp.has_table("visual_baselines"):
+        op.create_table(
+            "visual_baselines",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False, index=True),
         sa.Column("test_case_id", sa.String(36), sa.ForeignKey("test_cases.id"), nullable=False),
@@ -64,10 +71,11 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("test_case_id", "browser", name="uq_visual_baseline_case_browser"),
-    )
+        )
 
-    op.create_table(
-        "visual_checks",
+    if not insp.has_table("visual_checks"):
+        op.create_table(
+            "visual_checks",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False, index=True),
         sa.Column("test_case_id", sa.String(36), sa.ForeignKey("test_cases.id"), nullable=False),
@@ -81,7 +89,7 @@ def upgrade() -> None:
         sa.Column("approved", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
+        )
 
 
 def downgrade() -> None:

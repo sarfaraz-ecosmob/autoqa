@@ -15,16 +15,29 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    insp = sa.inspect(op.get_bind())
+
+    def add_if_missing(table: str, column: str, column_def: sa.Column) -> None:
+        # Idempotency guard: 0001 runs Base.metadata.create_all() from the LIVE
+        # models, so on a fresh database these columns already exist — adding
+        # them again fails with DuplicateColumn. Legacy databases (schema as of
+        # this revision) still get the column added.
+        if column not in {c["name"] for c in insp.get_columns(table)}:
+            op.add_column(table, column_def)
+
+    add_if_missing(
         "test_cases",
+        "capture_on_pass",
         sa.Column("capture_on_pass", sa.Boolean(), nullable=False, server_default=sa.text("false")),
     )
-    op.add_column(
+    add_if_missing(
         "performance_results",
+        "meta",
         sa.Column("meta", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),
     )
-    op.add_column(
+    add_if_missing(
         "accessibility_results",
+        "meta",
         sa.Column("meta", sa.JSON(), server_default=sa.text("'{}'::json"), nullable=False),
     )
 

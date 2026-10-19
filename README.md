@@ -33,14 +33,14 @@ Yes — the stack is self-contained. Minimum steps:
 3. **Before first start, change these in `.env`:**
    - `AUTOQA_SECRET_KEY` — long random string. This key derives the Fernet key that encrypts **all secrets at rest** (LLM API key, project credentials, test-data secrets). Set it before first use and never change it afterwards — changing it makes previously stored secrets undecryptable
    - `POSTGRES_PASSWORD` / `MINIO_ROOT_PASSWORD` / `AUTOQA_MINIO_SECRET_KEY`
-   - `AUTOQA_LLM_API_KEY` (optional bootstrap AI key — see below; the UI-managed key overrides it)
+   - `AUTOQA_LLM_PROVIDER=openrouter` + `AUTOQA_LLM_API_KEY` (the OpenRouter key lives in `.env` and takes precedence over any UI-saved key)
 4. `docker compose up -d --build`
 
 That's it: migrations apply automatically, the demo test target starts, and the first registered user becomes admin. Open `http://<server-ip>:8080`.
 
 Notes for servers:
 
-- The **LLM key configured via the UI is stored in the database**, so it survives restarts and moves with the Postgres volume — no need to put it in `.env` on a new server. `.env`'s `AUTOQA_LLM_API_KEY` is only the fallback for fresh installs.
+- The **LLM key in `.env` (`AUTOQA_LLM_API_KEY`) is authoritative** — it wins over any key saved in the UI, so on a new server you only set `.env` and never re-enter the key in the app. A UI-managed key (Settings → AI Assistant, Fernet-encrypted in Postgres) is used **only** when `.env` has no key.
 - Data lives in named volumes (`pgdata`, `miniodata`, `artifacts`). Copy these volumes to migrate an existing installation (see **Backups** below).
 - The frontend is built into the image (`tsc && vite build`), so no Node is needed on the server.
 - Firewall note: only port `8080` (UI/API) and optionally `9000` (demo-app) need exposure; everything else is internal.
@@ -234,12 +234,20 @@ docker compose up -d
 
 ## Changing the OpenRouter API key
 
-Two ways:
+**Recommended: `.env` (no key stored anywhere else).** The `AUTOQA_LLM_*` vars in `.env` are forwarded into every backend/worker container by `docker-compose.yml`, and **an env key is authoritative** — it wins over any key saved in the UI:
 
-- **UI (recommended):** Settings → **AI Assistant** → paste the new key → Save. Requires an admin account. The key is Fernet-encrypted at rest, never displayed again (only masked like `sk-••••217`), and takes effect immediately — "Test connection" verifies it and reports the auto-detected model.
-- **API:** `PUT /api/settings/ai` with `{"provider": "openrouter", "model": "auto", "api_key": "sk-or-v1-..."}`. Sending an **empty** `api_key` clears the stored key (falls back to `.env`).
+1. Edit `.env` → set `AUTOQA_LLM_PROVIDER=openrouter` and `AUTOQA_LLM_API_KEY=sk-or-v1-...`
+2. `docker compose up -d` (env changes need a **recreate**, not just a restart)
+3. Verify: `docker compose exec backend python -c "from app.ai import _effective_config as f; c=f(); print(c['provider'], bool(c['api_key']))"`
 
-The key is stored in the DB (`llm_settings`, singleton) and overrides `.env`. Model: leave `auto` to auto-pick the best free OpenRouter model, or pin a slug like `z-ai/glm-5.2:free`.
+Rotating the key is the same two steps — nothing is re-encrypted or re-saved. If an env key is present, Settings → AI Assistant reports `source: env` and ignores the DB key entirely.
+
+**Alternative: UI** (used only when `.env` has no key):
+
+- **UI:** Settings → **AI Assistant** → paste the key → Save. Requires an admin account. The key is Fernet-encrypted at rest, never displayed again (only masked like `sk-••••217`), and takes effect immediately — "Test connection" verifies it and reports the auto-detected model.
+- **API:** `PUT /api/settings/ai` with `{"provider": "openrouter", "model": "auto", "api_key": "sk-or-v1-..."}`. Sending an **empty** `api_key` clears the stored key.
+
+Model: leave `auto` to auto-pick the best free OpenRouter model, or pin a slug like `z-ai/glm-5.2:free`.
 
 ## Developer commands
 
@@ -368,7 +376,7 @@ GET  /api/projects/{id}/requirements/traceability  # matrix + summary
 The **Settings** page (header → Settings, admin sections marked) provides:
 
 - **Password change** — verifies the current password, bcrypt-hashed (§25)
-- **AI Assistant** — add/replace the OpenRouter or OpenAI API key from the UI; the key is Fernet-encrypted at rest (§17), shown only masked (`sk-••••ef`), and takes precedence over `AUTOQA_LLM_API_KEY` in `.env` (which remains the bootstrap fallback). With model `auto`, the best **free** OpenRouter model is detected at runtime and cached for 1 hour. "Test connection" verifies the key and reports the resolved model.
+- **AI Assistant** — the OpenRouter or OpenAI API key normally comes from `.env` (`AUTOQA_LLM_API_KEY`), which is authoritative and shown here as `source: env`; the UI field is a fallback for when `.env` has no key, and a key saved there is Fernet-encrypted at rest (§17), shown only masked (`sk-••••ef`). With model `auto`, the best **free** OpenRouter model is detected at runtime and cached for 1 hour. "Test connection" verifies the key and reports the resolved model.
 - **Notifications** — per-event in-app notification settings (run completed / failed tests / scan / report / a11y / perf) plus an inbox with unread badge in the header bell. Workers emit real events; disabled event types are never stored.
 
 ## Security notes

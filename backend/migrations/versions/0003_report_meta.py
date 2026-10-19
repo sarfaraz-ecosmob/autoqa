@@ -15,10 +15,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "reports",
-        sa.Column("meta", sa.JSON(), server_default=sa.text("'{}'::json"), nullable=False),
-    )
+    # Idempotency guard: on a fresh database 0001 (create_all from the live
+    # models) already created this column.
+    insp = sa.inspect(op.get_bind())
+    if "meta" not in {c["name"] for c in insp.get_columns("reports")}:
+        op.add_column(
+            "reports",
+            sa.Column("meta", sa.JSON(), server_default=sa.text("'{}'::json"), nullable=False),
+        )
 
 
 def downgrade() -> None:

@@ -84,10 +84,15 @@ def get_ai_settings(
     db.commit()  # persist singleton if just created
 
     configured = bool((row.api_key_encrypted or "").strip())
-    env_key = bool((s.llm_api_key or "").strip())
-    provider = row.provider if configured or row.provider != "none" else s.llm_provider
+    env_key = (s.llm_api_key or "").strip()
+    has_env = bool(env_key)
+    # An env key is authoritative (see app/ai._effective_config): report the
+    # EFFECTIVE source and mask the key that is actually in use.
+    provider = s.llm_provider if has_env else (row.provider if configured or row.provider != "none" else s.llm_provider)
     masked = None
-    if configured:
+    if has_env:
+        masked = mask_secret(env_key)
+    elif configured:
         try:
             masked = mask_secret(decrypt_secret(row.api_key_encrypted))
         except Exception:
@@ -95,13 +100,14 @@ def get_ai_settings(
 
     status = {
         "provider": provider,
-        "model": row.model or "auto",
-        "base_url": row.base_url or "",
-        "has_key": configured or env_key,
+        "model": (s.llm_model if has_env else None) or row.model or "auto",
+        "base_url": (s.llm_base_url if has_env else None) or row.base_url or "",
+        "has_key": configured or has_env,
         "masked_key": masked,
-        "source": "database" if configured else ("env" if env_key else "none"),
+        "source": "env" if has_env else ("database" if configured else "none"),
+        "env_override": has_env,
         "env_provider": s.llm_provider,
-        "env_has_key": env_key,
+        "env_has_key": has_env,
     }
     if provider == "openrouter" and status["has_key"]:
         try:

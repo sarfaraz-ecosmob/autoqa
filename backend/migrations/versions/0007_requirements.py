@@ -22,8 +22,13 @@ def upgrade() -> None:
     # postgresql.ENUM with create_type=False is required: a plain sa.Enum would
     # emit CREATE TYPE inside op.create_table and fail (type exists since 0001).
     priority_enum = postgresql.ENUM(*_PRIORITY_VALUES, name="priority", create_type=False)
-    op.create_table(
-        "requirements",
+    # Idempotency guards: 0001 (create_all from the live models) already created
+    # these tables/indexes on a fresh database.
+    insp = sa.inspect(op.get_bind())
+
+    if not insp.has_table("requirements"):
+        op.create_table(
+            "requirements",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("projects.id"), nullable=False, index=True),
         sa.Column("external_id", sa.String(60), nullable=False),
@@ -36,13 +41,15 @@ def upgrade() -> None:
         sa.Column("tags", sa.JSON(), nullable=False, server_default="[]"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
-    op.create_index(
-        "ix_req_project_external", "requirements", ["project_id", "external_id"], unique=True
-    )
+        )
+    if "ix_req_project_external" not in {ix["name"] for ix in insp.get_indexes("requirements")}:
+        op.create_index(
+            "ix_req_project_external", "requirements", ["project_id", "external_id"], unique=True
+        )
 
-    op.create_table(
-        "requirement_links",
+    if not insp.has_table("requirement_links"):
+        op.create_table(
+            "requirement_links",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), nullable=False, index=True),
         sa.Column("requirement_id", sa.String(36), sa.ForeignKey("requirements.id"), nullable=False, index=True),
@@ -50,8 +57,9 @@ def upgrade() -> None:
         sa.Column("coverage", sa.String(20), nullable=False, server_default="ui"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
-    op.create_unique_constraint("uq_req_link", "requirement_links", ["requirement_id", "test_case_id"])
+        )
+    if "uq_req_link" not in {c["name"] for c in insp.get_unique_constraints("requirement_links")}:
+        op.create_unique_constraint("uq_req_link", "requirement_links", ["requirement_id", "test_case_id"])
 
 
 def downgrade() -> None:

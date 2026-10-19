@@ -15,9 +15,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("users", sa.Column("preferences", sa.JSON(), server_default=sa.text("'{}'::json"), nullable=False))
-    op.create_table(
-        "llm_settings",
+    # Idempotency guards: 0001 runs create_all() from the live models, so on a
+    # fresh database everything below already exists (create_all would otherwise
+    # fail here with DuplicateColumn / DuplicateTable).
+    insp = sa.inspect(op.get_bind())
+
+    if "preferences" not in {c["name"] for c in insp.get_columns("users")}:
+        op.add_column(
+            "users",
+            sa.Column("preferences", sa.JSON(), server_default=sa.text("'{}'::json"), nullable=False),
+        )
+
+    if not insp.has_table("llm_settings"):
+        op.create_table(
+            "llm_settings",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("provider", sa.String(20), nullable=False, server_default="none"),
         sa.Column("base_url", sa.String(500), nullable=False, server_default=""),
@@ -26,9 +37,11 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.String(36), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
-    op.create_table(
-        "notifications",
+        )
+
+    if not insp.has_table("notifications"):
+        op.create_table(
+            "notifications",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), index=True, nullable=False),
         sa.Column("project_id", sa.String(36), nullable=True),
@@ -39,9 +52,11 @@ def upgrade() -> None:
         sa.Column("read_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
-    op.create_table(
-        "notification_settings",
+        )
+
+    if not insp.has_table("notification_settings"):
+        op.create_table(
+            "notification_settings",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), unique=True, index=True, nullable=False),
         sa.Column("events", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")),
@@ -49,7 +64,7 @@ def upgrade() -> None:
         sa.Column("email_address", sa.String(320), nullable=False, server_default=""),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-    )
+        )
 
 
 def downgrade() -> None:

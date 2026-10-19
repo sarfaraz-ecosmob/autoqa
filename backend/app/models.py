@@ -123,7 +123,8 @@ class LlmSetting(Base, TimestampMixin):
     """Singleton row (id=1): UI-managed AI provider config (spec §1, §22).
 
     The API key is encrypted at rest with Fernet (§17) — never returned to
-    the client, only a masked preview. DB values override env config.
+    the client, only a masked preview. Used only when .env has no
+    AUTOQA_LLM_API_KEY: an env key is authoritative (app/ai._effective_config).
     """
     __tablename__ = "llm_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)

@@ -15,10 +15,14 @@ depends_on = None
 
 def upgrade() -> None:
     # [] = no type restriction (group runs every category it contains).
-    op.add_column(
-        "test_suites",
-        sa.Column("test_types", sa.JSON(), nullable=False, server_default="[]"),
-    )
+    # Idempotency guard: 0001 (create_all from the live models) already created
+    # this column on a fresh database.
+    insp = sa.inspect(op.get_bind())
+    if "test_types" not in {c["name"] for c in insp.get_columns("test_suites")}:
+        op.add_column(
+            "test_suites",
+            sa.Column("test_types", sa.JSON(), nullable=False, server_default="[]"),
+        )
 
 
 def downgrade() -> None:
