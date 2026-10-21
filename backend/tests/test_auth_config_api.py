@@ -217,6 +217,13 @@ class _FakeAsyncPage:
         self.clicked.append(selector)
         self.url = self._landing  # simulate redirect after submit
 
+    async def press(self, selector, key):
+        self.clicked.append(f"press:{selector}:{key}")
+        self.url = self._landing
+
+    async def wait_for_load_state(self, state=None, timeout=None):
+        return None
+
     async def wait_for_timeout(self, ms):
         return None
 
@@ -490,3 +497,324 @@ def test_api_auth_success_sends_header(monkeypatch):
     assert captured["headers"] == {"Authorization": "Bearer tok-123"}
     db.close()
     engine.dispose()
+
+
+# ---------- two-factor authentication (OTP / 2FA) ----------
+
+_RFC6238_SECRET_B32 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # ASCII "12345678901234567890"
+
+
+def test_totp_matches_rfc6238_vectors():
+    from app.execution.auth_flow import totp
+
+    # RFC 6238 Appendix B (SHA-1): t=59 → 94287082, t=1111111109 → 07081804
+    assert totp(_RFC6238_SECRET_B32, digits=8, at=59) == "94287082"
+    assert totp(_RFC6238_SECRET_B32, digits=6, at=59) == "287082"
+    assert totp(_RFC6238_SECRET_B32, digits=6, at=1111111109) == "081804"
+    # padding optional, case-insensitive, always zero-padded
+    assert totp(_RFC6238_SECRET_B32.lower().rstrip("="), digits=6, at=59) == "287082"
+
+
+def test_generate_otp_prefers_static_then_totp():
+    from app.execution.auth_flow import generate_otp, totp
+
+    assert generate_otp({}, {}) == ""
+    assert generate_otp({"otp_secret": _RFC6238_SECRET_B32}, {}) == totp(_RFC6238_SECRET_B32)
+    # a static/backdoor code wins over the TOTP secret
+    assert generate_otp({"otp_secret": _RFC6238_SECRET_B32, "otp_code": "135790"}, {}) == "135790"
+    # invalid base32 → empty (OTP step skipped), never an exception
+    assert generate_otp({"otp_secret": "not base32!!"}, {}) == ""
+    # {{placeholders}} resolve from variables
+    assert generate_otp({"otp_code": "{{code}}"}, {"code": "999111"}) == "999111"
+
+
+async def _otp_async_login(credentials, selectors_present, auth_extra=None):
+    """Run browser_login_async with the fake page + given OTP setup."""
+    from app.execution.auth_flow import browser_login_async
+
+    page = _FakeAsyncPage(selectors_present=selectors_present)
+    log = []
+    auth = {
+        "login_url": "http://x/login",
+        "success_assert": "url_not_contains:login",
+        **(auth_extra or {}),
+    }
+    ok = await browser_login_async(page, auth, credentials, {}, log)
+    return ok, page, log
+
+
+async def test_browser_login_async_fills_otp_step():
+    """2FA configured → fresh TOTP filled into the OTP input + submitted."""
+    from app.execution.auth_flow import totp
+
+    ok, page, log = await _otp_async_login(
+        {"username": "u", "password": "p", "otp_secret": _RFC6238_SECRET_B32},
+        selectors_present={
+            "input[name='username']",
+            "input[type='password']",
+            "button[type='submit']",
+            "input[name='otp']",
+            "button.otp-continue",
+        },
+        auth_extra={"otp_selector": "input[name='otp']", "otp_submit_selector": "button.otp-continue"},
+    )
+    assert ok is True
+    assert ("input[name='otp']", totp(_RFC6238_SECRET_B32)) in page.filled
+    assert "button[type='submit']" in page.clicked
+    assert "button.otp-continue" in page.clicked
+    otp_events = [e for e in log if e.get("action") == "auth_otp"]
+    assert otp_events and otp_events[0]["result"] == "pass"
+    # the code itself must never be logged
+    assert totp(_RFC6238_SECRET_B32) not in str(log)
+
+
+async def test_browser_login_async_auto_detects_otp_input():
+    """No otp_selector configured → the one-time-code candidate is probed."""
+    from app.execution.auth_flow import totp
+
+    ok, page, log = await _otp_async_login(
+        {"username": "u", "password": "p", "otp_secret": _RFC6238_SECRET_B32},
+        selectors_present={
+            "input[name='username']",
+            "input[type='password']",
+            "button[type='submit']",
+            "input[autocomplete='one-time-code']",
+        },
+    )
+    assert ok is True
+    assert ("input[autocomplete='one-time-code']", totp(_RFC6238_SECRET_B32)) in page.filled
+
+
+async def test_browser_login_async_skips_otp_when_not_prompted():
+    """2FA configured but the target shows no OTP input → login proceeds."""
+    ok, page, log = await _otp_async_login(
+        {"username": "u", "password": "p", "otp_secret": _RFC6238_SECRET_B32},
+        selectors_present={"input[name='username']", "input[type='password']", "button[type='submit']"},
+    )
+    assert ok is True
+    otp_events = [e for e in log if e.get("action") == "auth_otp"]
+    assert otp_events and otp_events[0]["result"] == "skipped"
+    assert not any(sel == "input[autocomplete='one-time-code']" for sel, _ in page.filled)
+
+
+async def test_browser_login_async_fails_when_otp_fill_fails():
+    """OTP prompted but unfillable → the login fails loudly, not vacuously."""
+    import asyncio
+
+    from app.execution.auth_flow import browser_login_async
+
+    class _BrokenOtpPage(_FakeAsyncPage):
+        async def fill(self, selector, value, timeout=None):
+            if selector == "input[name='otp']":
+                raise RuntimeError("element is not editable")
+            await super().fill(selector, value, timeout=timeout)
+
+    page = _BrokenOtpPage(
+        selectors_present={
+            "input[name='username']",
+            "input[type='password']",
+            "button[type='submit']",
+            "input[name='otp']",
+        }
+    )
+    log = []
+    ok = await browser_login_async(
+        page,
+        {"login_url": "http://x/login", "otp_selector": "input[name='otp']", "success_assert": "url_not_contains:login"},
+        {"username": "u", "password": "p", "otp_secret": _RFC6238_SECRET_B32},
+        {},
+        log,
+    )
+    assert ok is False
+    otp_events = [e for e in log if e.get("action") == "auth_otp"]
+    assert otp_events and otp_events[0]["result"] == "fail"
+
+
+class _FakeSyncLocator:
+    def __init__(self, n):
+        self._n = n
+
+    def count(self):
+        return self._n
+
+
+class _FakeSyncPage:
+    """Sync twin of _FakeAsyncPage for the test-executor login path."""
+
+    def __init__(self, selectors_present, landing_url="http://x/dashboard"):
+        self._selectors = set(selectors_present)
+        self.url = "http://x/login"
+        self._landing = landing_url
+        self.filled = []
+        self.clicked = []
+
+    def goto(self, url, timeout=None, wait_until=None):
+        self.url = url
+
+    def fill(self, selector, value, timeout=None):
+        self.filled.append((selector, value))
+
+    def click(self, selector, timeout=None):
+        self.clicked.append(selector)
+        self.url = self._landing
+
+    def press(self, selector, key):
+        self.clicked.append(f"press:{selector}:{key}")
+        self.url = self._landing
+
+    def locator(self, sel):
+        return _FakeSyncLocator(1 if sel in self._selectors else 0)
+
+    def get_by_text(self, text):
+        return _FakeSyncLocator(1 if text == "Welcome" else 0)
+
+    def wait_for_load_state(self, state=None, timeout=None):
+        return None
+
+    def wait_for_timeout(self, ms):
+        return None
+
+    def title(self):
+        return "Dashboard"
+
+
+def test_browser_login_sync_handles_otp_step():
+    from app.execution.auth_flow import browser_login
+
+    page = _FakeSyncPage(
+        selectors_present={
+            "input[name='username']",
+            "input[type='password']",
+            "button[type='submit']",
+            "input[name='otp']",
+        }
+    )
+    log = []
+    ok = browser_login(
+        page,
+        {"login_url": "http://x/login", "otp_selector": "input[name='otp']", "success_assert": "url_not_contains:login"},
+        {"username": "u", "password": "p", "otp_code": "445566"},
+        {},
+        log,
+    )
+    assert ok is True
+    assert ("input[name='otp']", "445566") in page.filled
+    assert any(e.get("action") == "auth_otp" and e.get("result") == "pass" for e in log)
+
+
+def test_browser_login_sync_unchanged_without_otp():
+    """No otp_secret/otp_code → zero OTP activity (no waits, no probes)."""
+    from app.execution.auth_flow import browser_login
+
+    page = _FakeSyncPage(
+        selectors_present={"input[name='username']", "input[type='password']", "button[type='submit']"}
+    )
+    log = []
+    ok = browser_login(
+        page,
+        {"login_url": "http://x/login", "success_assert": "url_not_contains:login"},
+        {"username": "u", "password": "p"},
+        {},
+        log,
+    )
+    assert ok is True
+    assert page.filled == [("input[name='username']", "u"), ("input[type='password']", "p")]
+    assert not any(e.get("action") == "auth_otp" for e in log)
+
+
+# ---------- OTP storage: encrypted, masked, re-save-safe ----------
+
+def test_otp_values_masked_and_selectors_readable(client_and_project):
+    client, pid = client_and_project
+    _save_auth(
+        client, pid,
+        values={"username": "qa@x.com", "password": "s3cret-long", "otp_secret": _RFC6238_SECRET_B32, "otp_code": "135790"},
+        auth={
+            "login_url": "http://demo-app:9000/login",
+            "otp_selector": "input[name='otp']",
+            "otp_submit_selector": "button.otp-continue",
+        },
+    )
+    data = client.get(f"/api/projects/{pid}").json()
+    assert data["credentials"]["otp_secret"] == "••••••••"
+    assert data["credentials"]["otp_code"] == "••••••••"
+    assert data["auth"]["otp_selector"] == "input[name='otp']"
+    assert data["auth"]["otp_submit_selector"] == "button.otp-continue"
+
+    # re-saving the masked round-trip must NOT wipe the real OTP secret
+    r = _save_auth(client, pid, values=data["credentials"], auth=data["auth"])
+    assert r.status_code == 200
+    revealed = client.get(f"/api/projects/{pid}/credentials?reveal=true").json()
+    assert revealed["credentials"]["otp_secret"] == _RFC6238_SECRET_B32
+    assert revealed["credentials"]["otp_code"] == "135790"
+
+
+def test_dry_run_dispatches_otp_overrides(client_and_project, monkeypatch):
+    client, pid = client_and_project
+    sent = {}
+
+    class FakeCelery:
+        def send_task(self, name, kwargs=None, task_id=None):
+            sent.update(name=name, kwargs=kwargs, task_id=task_id)
+
+    import app.api.projects as projects_mod
+
+    monkeypatch.setattr(projects_mod, "celery_app", FakeCelery())
+    r = client.post(
+        f"/api/projects/{pid}/dry-run-login",
+        json={
+            "login_url": "http://demo-app:9000/login",
+            "username": "u",
+            "password": "p",
+            "otp_secret": _RFC6238_SECRET_B32,
+            "otp_selector": "input[name='otp']",
+        },
+    )
+    assert r.status_code == 202
+    assert sent["kwargs"]["credentials_override"]["otp_secret"] == _RFC6238_SECRET_B32
+    assert sent["kwargs"]["auth_override"]["otp_selector"] == "input[name='otp']"
+    # nothing persisted
+    assert client.get(f"/api/projects/{pid}").json()["has_credentials"] is False
+
+
+def test_api_token_request_resolves_otp_placeholder(monkeypatch):
+    """{{otp}} in the token request body resolves to the current code."""
+    from app.execution import auth_flow
+
+    monkeypatch.setattr(auth_flow, "totp", lambda secret, digits=6, period=30, at=None: "123456")
+
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"token": "tok-abc"}
+
+    class FakeClient:
+        def __init__(self, base_url=None, timeout=None):
+            captured["base_url"] = base_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def request(self, method, path, json=None, data=None, content=None, headers=None):
+            captured.update(method=method, path=path, json=json)
+            return FakeResp()
+
+    import httpx as _httpx
+
+    monkeypatch.setattr(_httpx, "Client", FakeClient)
+
+    token = auth_flow.fetch_api_token(
+        {"api_token_request": {"path": "/api/auth/login", "json": {"username": "{{username}}", "otp": "{{otp}}"}, "token_path": "token"}},
+        {"username": "qa@x.com", "password": "p", "otp_secret": _RFC6238_SECRET_B32},
+        {},
+        "http://demo-app:9000",
+    )
+    assert token == "tok-abc"
+    assert captured["json"]["otp"] == "123456"
+    assert captured["json"]["username"] == "qa@x.com"

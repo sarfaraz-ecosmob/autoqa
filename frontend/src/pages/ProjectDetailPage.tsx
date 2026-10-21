@@ -27,6 +27,11 @@ interface AuthForm {
   api_auth_header_value: string;
   token_path: string;
   token_endpoint: string;
+  // two-factor authentication (OTP / 2FA)
+  otp_secret: string; // base32 TOTP secret (authenticator-app style)
+  otp_code: string; // static/backdoor one-time code (wins over TOTP)
+  otp_selector: string; // OTP input; empty = auto-detect
+  otp_submit_selector: string; // OTP-step button; empty = reuse submit
 }
 
 interface PageRow {
@@ -314,6 +319,10 @@ export default function ProjectDetailPage() {
     api_auth_header_value: "",
     token_path: "token",
     token_endpoint: "",
+    otp_secret: "",
+    otp_code: "",
+    otp_selector: "",
+    otp_submit_selector: "",
   };
   const [credForm, setCredForm] = useState<AuthForm>(emptyAuth);
   const [credBusy, setCredBusy] = useState(false);
@@ -483,6 +492,8 @@ export default function ProjectDetailPage() {
       api_auth_header_value: a.api_auth_header_value || "",
       token_path: tokReq.token_path || f.token_path,
       token_endpoint: tokReq.path || f.token_endpoint,
+      otp_selector: a.otp_selector || "",
+      otp_submit_selector: a.otp_submit_selector || "",
     }));
   }
 
@@ -498,6 +509,8 @@ export default function ProjectDetailPage() {
         if (credForm.username) values.username = credForm.username;
         if (credForm.password) values.password = credForm.password;
         if (credForm.api_auth_header_value) values.api_token = credForm.api_auth_header_value;
+        if (credForm.otp_secret) values.otp_secret = credForm.otp_secret;
+        if (credForm.otp_code) values.otp_code = credForm.otp_code;
         const auth: Record<string, unknown> = {
           login_url: credForm.login_url || null,
           username_selector: credForm.username_selector || null,
@@ -506,6 +519,8 @@ export default function ProjectDetailPage() {
           success_assert: credForm.success_assert || null,
           api_auth_header: credForm.api_auth_header || "",
           api_auth_prefix: credForm.api_auth_prefix || "",
+          otp_selector: credForm.otp_selector || null,
+          otp_submit_selector: credForm.otp_submit_selector || null,
         };
         if (credForm.api_auth_header_value) auth.api_auth_header_value = credForm.api_auth_header_value;
         if (credForm.token_endpoint) {
@@ -522,7 +537,7 @@ export default function ProjectDetailPage() {
       const updated = await api.patch<Project>(`/projects/${id}`, body);
       setProject(updated);
       applyAuthDefaults(updated);
-      setCredForm((f) => ({ ...f, username: "", password: "", api_auth_header_value: "" }));
+      setCredForm((f) => ({ ...f, username: "", password: "", api_auth_header_value: "", otp_secret: "", otp_code: "" }));
       setCredMsg(clear ? "Credentials cleared." : "Saved — credentials are encrypted at rest.");
     } catch (err) {
       setCredMsg(err instanceof Error ? err.message : "Save failed");
@@ -663,6 +678,10 @@ export default function ProjectDetailPage() {
         success_assert: credForm.success_assert || null,
         username: credForm.username || null,
         password: credForm.password || null,
+        otp_secret: credForm.otp_secret || null,
+        otp_code: credForm.otp_code || null,
+        otp_selector: credForm.otp_selector || null,
+        otp_submit_selector: credForm.otp_submit_selector || null,
       });
       type DryRunResult = { login_ok?: boolean; error?: string; final_url?: string };
       let result: DryRunResult | null = null;
@@ -715,6 +734,8 @@ export default function ProjectDetailPage() {
           api_auth_header_value: credForm.api_auth_header_value || null,
           username: credForm.username || null,
           password: credForm.password || null,
+          otp_secret: credForm.otp_secret || null,
+          otp_code: credForm.otp_code || null,
         },
       );
       setApiTest({ state: res.ok ? "ok" : "fail", detail: res.message });
@@ -1739,7 +1760,9 @@ export default function ProjectDetailPage() {
               Used to sign in before scans/tests and to authenticate API calls. Stored
               encrypted (Fernet), shown masked, never included in logs or reports.
               Fill the login URL and press Auto-detect to have the selectors filled
-              for you, then Dry run to verify before saving. Targets protected by
+              for you, then Dry run to verify before saving. Apps that ask for a
+              one-time code after the password (2FA) are supported via the OTP
+              section below. Targets protected by
               bot challenges (e.g. Cloudflare human verification) can't be scanned
               automatically — use a staging copy of the app instead.
             </p>
@@ -1766,6 +1789,10 @@ export default function ProjectDetailPage() {
                     ["Password selector", credForm.password_selector],
                     ["Submit selector", credForm.submit_selector],
                     ["Success check", credForm.success_assert],
+                    ["OTP secret", showCreds && revealData ? revealData.credentials.otp_secret : ((project.credentials?.otp_secret as string) ?? "")],
+                    ["OTP code", showCreds && revealData ? revealData.credentials.otp_code : ((project.credentials?.otp_code as string) ?? "")],
+                    ["OTP field selector", credForm.otp_selector],
+                    ["OTP submit selector", credForm.otp_submit_selector],
                   ].map(([label, value]) =>
                     value ? (
                       <div key={label} className="flex gap-2 min-w-0">
@@ -1899,6 +1926,63 @@ export default function ProjectDetailPage() {
                   placeholder="url_not_contains:login"
                 />
               </div>
+
+              {/* ---- Two-factor authentication (OTP / 2FA) — optional ---- */}
+              <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <h4 className="text-sm font-semibold text-slate-700 mb-1">
+                  Two-factor authentication (OTP) <span className="font-normal text-slate-400">— optional</span>
+                </h4>
+                <p className="text-xs text-slate-500 mb-3">
+                  For apps that ask for a verification code after the password. Paste the base32
+                  secret from your authenticator app (a fresh code is generated at each sign-in) or a
+                  static/backdoor code for test environments. Leave both empty when the app has no
+                  2FA — nothing changes then. Email/SMS codes can't be automated.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">TOTP secret (base32)</label>
+                    <input
+                      type="password"
+                      value={credForm.otp_secret}
+                      onChange={(e) => setCredForm({ ...credForm, otp_secret: e.target.value })}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      placeholder={project.credentials?.otp_secret ? "•••••••• (saved)" : "JBSWY3DPEHPK3PXP"}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Static code <span className="text-slate-400">(optional, e.g. test-env backdoor code)</span></label>
+                    <input
+                      type="password"
+                      value={credForm.otp_code}
+                      onChange={(e) => setCredForm({ ...credForm, otp_code: e.target.value })}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      placeholder={project.credentials?.otp_code ? "•••••••• (saved)" : "leave empty to use TOTP"}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                      OTP field selector <span className="text-slate-400">(empty = auto-detect)</span>
+                    </label>
+                    <input
+                      value={credForm.otp_selector}
+                      onChange={(e) => setCredForm({ ...credForm, otp_selector: e.target.value })}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                      placeholder="input[autocomplete='one-time-code']"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                      OTP submit selector <span className="text-slate-400">(empty = reuse the submit button)</span>
+                    </label>
+                    <input
+                      value={credForm.otp_submit_selector}
+                      onChange={(e) => setCredForm({ ...credForm, otp_submit_selector: e.target.value })}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">
                   API auth header <span className="text-slate-400">(attached to every API test request)</span>

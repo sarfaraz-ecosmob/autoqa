@@ -27,8 +27,13 @@ Contract kept for the platform's tests (routes and payload shapes):
   GET  /api/orders/{int}             -> {"id": N, "status": "shipped"}
   POST /api/checkout                -> always 500 (flaw)
 """
+import base64
+import hmac
+import struct
+import time
+
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 app = FastAPI(title="Demo Shop", docs_url="/api-docs")
 
@@ -331,6 +336,85 @@ def login(username: str = Form(""), password: str = Form("")):
     if username and password:
         return JSONResponse({"ok": True, "token": "demo-token"})
     return JSONResponse({"ok": False, "error": "missing credentials"}, status_code=400)
+
+
+# ---------------------------------------------------------------------------
+# Two-factor login fixture (OTP / 2FA) — target for AutoQA's OTP support
+# ---------------------------------------------------------------------------
+# Realistic two-step sign-in: password first, then a one-time code, then a
+# real redirect to /dashboard (so `url_not_contains:login` passes only after
+# the 2FA step). Accepted codes:
+#   - a valid RFC 6238 TOTP for the demo authenticator secret below, or
+#   - the static backdoor code 135790 (test-environment style).
+TOTP_SECRET_B32 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # ASCII "12345678901234567890"
+OTP_BACKDOOR = "135790"
+
+
+def _demo_totp(secret_b32: str, at: float | None = None) -> str:
+    """RFC 6238 TOTP (SHA-1, 6 digits) — stdlib only, same algorithm AutoQA uses."""
+    key = base64.b32decode(secret_b32 + "=" * ((8 - len(secret_b32) % 8) % 8))
+    counter = int((time.time() if at is None else at) // 30)
+    digest = hmac.new(key, struct.pack(">Q", counter), "sha1").digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % 10**6
+    return str(code).zfill(6)
+
+
+@app.get("/login-2fa", response_class=HTMLResponse)
+def login_2fa_form():
+    body = """
+<section class='block'>
+  <h1>Sign in <span style='font-size:.55em;color:#64748b'>(with 2FA)</span></h1>
+  <p class='sub'>Step 1 of 2 — any username and a non-empty password. The next step asks for a one-time code.</p>
+  <div class='card' style='max-width:460px'>
+    <form method='post' action='/login-2fa' class='stack'>
+      <input name='username' placeholder='Username' autocomplete='username'>
+      <input name='password' type='password' placeholder='Password' autocomplete='current-password'>
+      <button type='submit'>Continue</button>
+    </form>
+  </div>
+</section>
+"""
+    return page("Login (2FA)", body)
+
+
+@app.post("/login-2fa")
+def login_2fa(username: str = Form(""), password: str = Form("")):
+    if username and password:
+        return RedirectResponse("/login-2fa/otp", status_code=303)
+    return RedirectResponse("/login-2fa", status_code=303)
+
+
+@app.get("/login-2fa/otp", response_class=HTMLResponse)
+def login_2fa_otp(error: str = ""):
+    alert = "<div class='alert' role='alert'>Invalid code — try again.</div>" if error else ""
+    body = f"""
+<section class='block'>
+  <h1>Two-factor authentication</h1>
+  <p class='sub'>Step 2 of 2 — enter the 6-digit code from your authenticator app.<br>
+     Demo authenticator secret (base32): <code>{TOTP_SECRET_B32}</code> · static backdoor code: <code>{OTP_BACKDOOR}</code></p>
+  <div class='card' style='max-width:460px'>
+    <form method='post' action='/login-2fa/otp' class='stack'>
+      <input name='otp' inputmode='numeric' autocomplete='one-time-code' placeholder='123456'>
+      <button type='submit'>Verify</button>
+    </form>
+    {alert}
+  </div>
+</section>
+"""
+    return page("2FA code", body)
+
+
+@app.post("/login-2fa/otp")
+def login_2fa_verify(otp: str = Form("")):
+    entered = otp.strip()
+    now = time.time()
+    valid = hmac.compare_digest(entered, OTP_BACKDOOR) or any(
+        hmac.compare_digest(entered, _demo_totp(TOTP_SECRET_B32, at=t)) for t in (now - 30, now, now + 30)
+    )
+    if valid:
+        return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/login-2fa/otp?error=1", status_code=303)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

@@ -14,7 +14,7 @@ import uuid as uuid_mod
 
 from app.security.crypto import decrypt_json, encrypt_json, mask_secrets
 
-_SECRET_KEY_HINTS = ("password", "secret", "token", "api_key", "apikey", "authorization", "cookie", "credential")
+_SECRET_KEY_HINTS = ("password", "secret", "token", "api_key", "apikey", "authorization", "cookie", "credential", "otp_code")
 
 
 def is_secret_key(key: str) -> bool:

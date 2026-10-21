@@ -3,6 +3,10 @@
 Three user-provided pieces (all optional):
   credentials   → dict like {"username": "qa@corp.com", "password": "..."} stored
                   Fernet-encrypted on the Project, masked in every API response.
+                  Two-factor: add "otp_secret" (base32 TOTP secret, authentica-
+                  tor-app style) or "otp_code" (static/backdoor code) and the
+                  browser login fills the 2FA prompt automatically (RFC 6238
+                  TOTP generated here on the stdlib — see generate_otp).
   auth flow     → how to sign in before tests: browser form login (selectors
                   resolved with the same self-healing as test steps) or a direct
                   API token request (token extracted from JSON and replayed as
@@ -18,6 +22,10 @@ generation never embeds plaintext secrets (only {{placeholders}}).
 """
 from __future__ import annotations
 
+import base64
+import hmac
+import struct
+import time
 from typing import Any
 
 from app.execution.api_exec import substitute_vars
@@ -33,7 +41,28 @@ _DEFAULT = {
     "api_token_request": None,  # {"path": "/api/auth/login", "json": {...}, "token_path": "token"}
     "api_auth_header": "Authorization",  # "Bearer {token}" by default; "" disables header attach
     "api_auth_prefix": "Bearer ",
+    # Two-factor authentication (OTP / 2FA). The CODE itself lives in the
+    # encrypted credentials values (otp_secret = base32 TOTP secret, or
+    # otp_code = static/backdoor code); these keys describe the 2FA UI.
+    "otp_selector": "",       # OTP input; empty = auto-detect one-time-code fields
+    "otp_submit_selector": "",  # OTP-step button; empty = reuse submit_selector
 }
+
+# Auto-detect candidates for the one-time-code input, tried in order when no
+# otp_selector is configured. Only ever probed when an OTP secret IS set, so
+# projects without 2FA never see this path.
+_OTP_INPUT_CANDIDATES = (
+    "input[autocomplete='one-time-code']",
+    "input[otp]",
+    "input[name*='otp' i]",
+    "input[id*='otp' i]",
+    "input[placeholder*='otp' i]",
+    "input[aria-label*='otp' i]",
+    "input[data-testid*='otp' i]",
+    "input[data-test*='otp' i]",
+)
+
+_OTP_WAIT_MS = 6000  # how long to wait for the 2FA prompt after submitting the form
 
 
 def normalize_auth(auth: dict | None) -> dict:
@@ -42,6 +71,50 @@ def normalize_auth(auth: dict | None) -> dict:
     merged.update({k: v for k, v in (auth or {}).items() if v is not None})
     merged["has_credentials"] = True
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Two-factor authentication (OTP / 2FA)
+# ---------------------------------------------------------------------------
+
+def _pad_base32(secret: str) -> str:
+    """Accept secrets pasted with or without '=' padding."""
+    return secret + "=" * ((8 - len(secret) % 8) % 8)
+
+
+def totp(secret: str, digits: int = 6, period: int = 30, at: float | None = None) -> str:
+    """RFC 6238 TOTP (SHA-1, 6 digits) implemented on the stdlib.
+
+    Deliberately dependency-free (no pyotp): this code runs inside the
+    already-built backend/browser-worker images and a new pip requirement
+    would force an image rebuild for zero benefit. `at` (epoch seconds) is
+    injectable for tests — RFC 6238 Appendix B vectors use t=59.
+    """
+    key = base64.b32decode(_pad_base32(secret.upper()))
+    counter = int((time.time() if at is None else at) // period)
+    digest = hmac.new(key, struct.pack(">Q", counter), "sha1").digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
+def generate_otp(credentials: dict, variables: dict) -> str:
+    """The one-time code for the 2FA step: a static code (otp_code, e.g. a
+    test-env backdoor code) wins when set; otherwise a fresh TOTP is derived
+    from the base32 otp_secret at this moment. Returns "" when neither is
+    configured (2FA disabled) or the secret is not valid base32 — callers
+    then skip the OTP step instead of failing the whole login."""
+    static = substitute_vars(str(credentials.get("otp_code") or ""), variables).strip()
+    if static:
+        return static
+    secret = substitute_vars(str(credentials.get("otp_secret") or ""), variables).strip()
+    secret = "".join(secret.split())  # allow spaces in pasted secrets
+    if not secret:
+        return ""
+    try:
+        return totp(secret)
+    except Exception:  # noqa: BLE001 — invalid base32 etc.
+        return ""
 
 
 def _assert_pass(assertion: str, page: Any, token_status: int | None) -> bool:
@@ -69,6 +142,80 @@ def _assert_pass(assertion: str, page: Any, token_status: int | None) -> bool:
     except Exception:
         return False
     return False
+
+
+def _otp_selector_candidates(auth: dict, variables: dict) -> list[str]:
+    """Ordered list of selectors to probe for the OTP input."""
+    configured = substitute_vars(str(auth.get("otp_selector") or ""), variables).strip()
+    return [configured] if configured else list(_OTP_INPUT_CANDIDATES)
+
+
+def _find_otp_input_sync(page: Any, auth: dict, variables: dict) -> str | None:
+    """Return the selector of a visible OTP input, waiting up to
+    _OTP_WAIT_MS for the 2FA prompt to appear after the password submit.
+    Returns None when no prompt shows up (site skipped 2FA this session)."""
+    candidates = _otp_selector_candidates(auth, variables)
+    attempts = max(1, _OTP_WAIT_MS // 250)
+    for i in range(attempts):
+        for cand in candidates:
+            try:
+                if page.locator(cand).count() > 0:
+                    return cand
+            except Exception:  # noqa: BLE001 — bad selector, try the next
+                continue
+        if i == attempts - 1:
+            break
+        try:
+            page.wait_for_timeout(250)
+        except Exception:  # noqa: BLE001
+            break
+    return None
+
+
+def _otp_step_sync(page: Any, auth: dict, credentials: dict, variables: dict, log: list) -> bool | None:
+    """Fill + submit the second-factor step when the target asks for it.
+
+    Returns True when the OTP step was handled, False when it was prompted
+    but failed (bad secret / unfillable input — the login cannot succeed),
+    and None when no OTP step appeared or 2FA is not configured. Projects
+    without otp_code/otp_secret never enter this path, so plain logins
+    behave exactly as before. The code value is never logged."""
+    code = generate_otp(credentials, variables)
+    if not code:
+        return None
+    selector = _find_otp_input_sync(page, auth, variables)
+    if not selector:
+        log.append({"action": "auth_otp", "result": "skipped", "note": "no OTP prompt detected"})
+        return None
+    try:
+        page.fill(selector, code, timeout=5000)
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_otp", "result": "fail", "error": f"otp fill failed: {exc}"[:200]})
+        return False
+    submit = substitute_vars(str(auth.get("otp_submit_selector") or ""), variables).strip() or substitute_vars(
+        str(auth.get("submit_selector") or ""), variables
+    )
+    try:
+        clicked = False
+        if submit:
+            try:
+                if page.locator(submit).count() > 0:
+                    page.click(submit, timeout=5000)
+                    clicked = True
+            except Exception:  # noqa: BLE001
+                pass
+        if not clicked:
+            page.press(selector, "Enter")  # Enter on the OTP field is the common fallback
+        try:
+            page.wait_for_load_state("load", timeout=10000)
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(300)  # let the app settle after the 2FA submit
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_otp", "result": "fail", "error": f"otp submit failed: {exc}"[:200]})
+        return False
+    log.append({"action": "auth_otp", "result": "pass"})
+    return True
 
 
 def browser_login(page: Any, auth: dict, credentials: dict, variables: dict, log: list) -> bool:
@@ -124,6 +271,10 @@ def browser_login(page: Any, auth: dict, credentials: dict, variables: dict, log
         log.append({"action": "auth_login", "result": "fail", "error": f"form submit failed: {exc}"[:200]})
         return False
 
+    # ---- Optional second factor (only when an OTP secret/code is set) ----
+    if _otp_step_sync(page, auth, credentials, variables, log) is False:
+        return False
+
     assertion = substitute_vars(str(auth.get("success_assert") or ""), variables).strip()
     if not assertion or assertion.lower() == "none":
         log.append({"action": "auth_login", "result": "pass", "note": "no success assertion configured"})
@@ -162,7 +313,9 @@ def fetch_api_token(auth: dict, credentials: dict, variables: dict, base_url: st
     }
     # {{username}}/{{password}} in the request spec resolve from the
     # credential values (over variables, so datasets can still override).
-    sub = {**variables, **creds}
+    # {{otp}} resolves to the current one-time code when 2FA is configured
+    # (some APIs accept TOTP directly in the login payload).
+    sub = {**variables, **creds, "otp": generate_otp(credentials, variables)}
     json_payload = substitute_vars(spec.get("json"), sub)
     form_payload = substitute_vars(spec.get("form") or spec.get("data"), sub)
     body_payload = substitute_vars(spec.get("body"), sub)
@@ -245,6 +398,66 @@ def _login_assertion(auth: dict, variables: dict) -> str:
     return substitute_vars(str(auth.get("success_assert") or ""), variables).strip()
 
 
+async def _find_otp_input_async(page: Any, auth: dict, variables: dict) -> str | None:
+    """Async twin of _find_otp_input_sync (page methods awaited)."""
+    candidates = _otp_selector_candidates(auth, variables)
+    attempts = max(1, _OTP_WAIT_MS // 250)
+    for i in range(attempts):
+        for cand in candidates:
+            try:
+                if await page.locator(cand).count() > 0:
+                    return cand
+            except Exception:  # noqa: BLE001 — bad selector, try the next
+                continue
+        if i == attempts - 1:
+            break
+        try:
+            await page.wait_for_timeout(250)
+        except Exception:  # noqa: BLE001
+            break
+    return None
+
+
+async def _otp_step_async(page: Any, auth: dict, credentials: dict, variables: dict, log: list) -> bool | None:
+    """Async twin of _otp_step_sync for the discovery crawler / dry runs."""
+    code = generate_otp(credentials, variables)
+    if not code:
+        return None
+    selector = await _find_otp_input_async(page, auth, variables)
+    if not selector:
+        log.append({"action": "auth_otp", "result": "skipped", "note": "no OTP prompt detected"})
+        return None
+    try:
+        await page.fill(selector, code, timeout=5000)
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_otp", "result": "fail", "error": f"otp fill failed: {exc}"[:200]})
+        return False
+    submit = substitute_vars(str(auth.get("otp_submit_selector") or ""), variables).strip() or substitute_vars(
+        str(auth.get("submit_selector") or ""), variables
+    )
+    try:
+        clicked = False
+        if submit:
+            try:
+                if await page.locator(submit).count() > 0:
+                    await page.click(submit, timeout=5000)
+                    clicked = True
+            except Exception:  # noqa: BLE001
+                pass
+        if not clicked:
+            await page.press(selector, "Enter")  # Enter fallback
+        try:
+            await page.wait_for_load_state("load", timeout=10000)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(300)  # let the app settle after the 2FA submit
+    except Exception as exc:  # noqa: BLE001
+        log.append({"action": "auth_otp", "result": "fail", "error": f"otp submit failed: {exc}"[:200]})
+        return False
+    log.append({"action": "auth_otp", "result": "pass"})
+    return True
+
+
 async def browser_login_async(page: Any, auth: dict, credentials: dict, variables: dict, log: list) -> bool:
     """Async twin of browser_login for the discovery crawler (async Playwright).
 
@@ -295,6 +508,10 @@ async def browser_login_async(page: Any, auth: dict, credentials: dict, variable
         await page.wait_for_timeout(300)  # let the app settle after submit
     except Exception as exc:  # noqa: BLE001
         log.append({"action": "auth_login", "result": "fail", "error": f"form submit failed: {exc}"[:200]})
+        return False
+
+    # ---- Optional second factor (only when an OTP secret/code is set) ----
+    if await _otp_step_async(page, auth, credentials, variables, log) is False:
         return False
 
     assertion = _login_assertion(auth, variables)

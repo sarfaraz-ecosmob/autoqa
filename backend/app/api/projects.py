@@ -97,6 +97,10 @@ def _store_credentials(current: str | None, values: dict | None, auth: dict | No
     """Merge values + auth into one encrypted blob, preserving whichever
     half is not being updated. An empty values dict means "don't change the
     saved values" (auth-only saves from the UI must not wipe credentials).
+    Values merge per key: omitted keys and mask placeholders (••••••••) keep
+    the stored value, so a partial save — or a round-trip of masked output
+    that still carries the unmasked username — can never wipe the other
+    secrets (password, otp_secret, …). Full removal is clear_credentials.
     The stored format is always {"values": dict, "auth": dict} — never None —
     so decrypt_credentials() doesn't misread it as the legacy flat format."""
     from app.testdata import decrypt_credentials
@@ -106,11 +110,10 @@ def _store_credentials(current: str | None, values: dict | None, auth: dict | No
     new_auth = auth if auth is not None else existing_auth
     # Defensive: a client that round-tripped masked output (e.g. password_selector
     # rendered as ••••••••) must not overwrite the real stored config — treat
-    # mask placeholders as "no change".
+    # mask placeholders as "no change" (per key).
     if isinstance(new_values, dict):
-        new_values = {k: v for k, v in new_values.items() if v != _MASK_PLACEHOLDER}
-    if not new_values:
-        new_values = existing_values
+        incoming = {k: v for k, v in new_values.items() if v != _MASK_PLACEHOLDER}
+        new_values = {**existing_values, **incoming}
     if isinstance(new_auth, dict):
         cleaned_auth: dict = {}
         for k, v in new_auth.items():
@@ -284,6 +287,10 @@ class DryRunIn(BaseModel):
     success_assert: str | None = None
     username: str | None = None
     password: str | None = None
+    otp_secret: str | None = None  # base32 TOTP secret (2FA)
+    otp_code: str | None = None  # static/backdoor one-time code
+    otp_selector: str | None = None
+    otp_submit_selector: str | None = None
 
 
 class TestApiAuthIn(BaseModel):
@@ -297,6 +304,8 @@ class TestApiAuthIn(BaseModel):
     api_auth_header_value: str | None = None
     username: str | None = None
     password: str | None = None
+    otp_secret: str | None = None  # enables {{otp}} in the token request body
+    otp_code: str | None = None
 
 
 @router.post("/{project_id}/detect-login", status_code=202)
@@ -351,10 +360,17 @@ def start_dry_run_login(
                 "password_selector": body.password_selector,
                 "submit_selector": body.submit_selector,
                 "success_assert": body.success_assert,
+                "otp_selector": body.otp_selector,
+                "otp_submit_selector": body.otp_submit_selector,
             },
             "credentials_override": {
                 k: v
-                for k, v in {"username": body.username, "password": body.password}.items()
+                for k, v in {
+                    "username": body.username,
+                    "password": body.password,
+                    "otp_secret": body.otp_secret,
+                    "otp_code": body.otp_code,
+                }.items()
                 if v
             },
         },
@@ -420,6 +436,14 @@ def test_api_auth(
         "username": body.username or values.get("username", ""),
         "password": body.password or values.get("password", ""),
     }
+    # 2FA: form overrides win, fall back to the saved secret/code so {{otp}}
+    # in the token request resolves during the live check too.
+    otp_secret = body.otp_secret or values.get("otp_secret", "")
+    otp_code = body.otp_code or values.get("otp_code", "")
+    if otp_secret:
+        credentials["otp_secret"] = otp_secret
+    if otp_code:
+        credentials["otp_code"] = otp_code
 
     log: list = []
     headers = resolve_api_auth_headers(auth, credentials, dict(credentials), project.base_url, log)

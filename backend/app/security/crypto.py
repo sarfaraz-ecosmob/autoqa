@@ -12,7 +12,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from app.config import get_settings
 
 _MASK = "••••••••"
-_SECRET_KEYS = {"password", "token", "secret", "api_key", "authorization", "cookie"}
+# Matched as substrings of the key name — "secret" already covers otp_secret;
+# "otp_code" is listed so static/backdoor 2FA codes are masked too.
+_SECRET_KEYS = {"password", "token", "secret", "api_key", "authorization", "cookie", "otp_code"}
 
 
 def _fernet() -> Fernet:
